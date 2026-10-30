@@ -1,4 +1,3 @@
-// Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
 import QtQuick 2.9
 import QtQuick.Controls 2.2
 import QtQuick.Layouts 1.2
@@ -1307,19 +1306,19 @@ Flickable {
                         onToggled: StreamingPreferences.syncKeyboardLocks = checked
                     }
                     CheckBox {
-                        text: qsTr("中英文跟随远端（微软拼音，后台持续同步）")
+                        text: qsTr("中英文双向同步（微软拼音，跟随操作焦点）")
                         checked: StreamingPreferences.syncImeFromHost
                         onToggled: StreamingPreferences.syncImeFromHost = checked
                     }
                     Label {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: qsTr("串流连接期间，本机中/英跟随远端当前输入窗口；本机修改不会反向同步。串流窗口的按键按远端设置处理。")
+                        text: qsTr("操作本机应用时，本机中/英同步到远端；操作串流时，远端中/英同步到本机。按实际状态同步，不模拟 Shift。")
                     }
                     Label {
                         width: parent.width
                         wrapMode: Text.WordWrap
-                        text: qsTr("状态同步需要配套修改版 Sunshine；连接旧服务端时自动禁用。更改设置后重新连接生效。")
+                        text: qsTr("状态同步需要配套修改版 Sunshine。本机切换同步到远端需两端均为 ImeSync2 或更新版；更改设置后重新连接生效。")
                     }
                 }
 

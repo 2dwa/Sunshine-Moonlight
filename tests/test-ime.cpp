@@ -58,6 +58,12 @@ int main(int argc,char**argv){
    auto observed=focusime::inspect(window).mode;
    printf("desired=%u observed=%u applied=%d\n",unsigned(mode),unsigned(observed),applied);
    if(!applied||observed!=mode){result=1;break;}++checks;
+   // A delayed opposite remote reply must not undo local input-mode changes.
+   auto stale = mode == focusime::Mode::english ? focusime::Mode::chinese : focusime::Mode::english;
+   if(focusime::mayApplyRemote(false,false,stale) || focusime::mayApplyRemote(true,false,stale))
+     focusime::apply(focusime::inspect(window),stale);
+   Sleep(300);
+   if(focusime::inspect(window).mode!=mode){result=1;break;}++checks;
    if(GetForegroundWindow()!=window){result=3;break;}
    SendMessageW(edit,WM_SETTEXT,0,reinterpret_cast<LPARAM>(L""));
    const WORD latin[]={ 'A',VK_SPACE };const WORD pinyin[]={ 'N','I',VK_SPACE };

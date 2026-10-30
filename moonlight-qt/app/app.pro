@@ -241,6 +241,7 @@ HEADERS += \
     backend/pairedcertificate.h \
     streaming/focusime.h \
     streaming/focusime_win.h \
+    streaming/focusime_protocol.h \
     settings/streamingpreferences.h \
     streaming/input/input.h \
     streaming/session.h \

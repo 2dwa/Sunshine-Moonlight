@@ -1,14 +1,16 @@
 # 定制协议与边界
 
-## 中英文输入法：远端为准
+## 中英文输入法：ImeSync2 按操作焦点同步
 
-能力位 `0x10000000`。`POST /api/v1/focus-ime/state` 请求体为空，复用 GameStream 配对证书 HTTPS；要求仍配对、该证书对应控制连接活动且键盘输入开启，仅提供读取接口。响应固定 5 字节：ASCII `FIM1` + 一个状态字节（0=未知/上下文禁用，1=英文，2=中文）。不传输窗口标题、输入文本、候选词或组合字符串。
+能力位仍为 `0x10000000`。新端点 `POST /api/v2/focus-ime/state` 请求与响应均固定 5 字节：ASCII `FIM2` + 状态字节（0=未知/只读，1=英文，2=中文）。请求 1/2 时对远端当前输入框应用该模式并重新读取状态；响应未知表示没有可访问或稳定的上下文。要求证书仍配对、对应串流控制连接活动且键盘输入开启，不接受任意窗口或键盘命令。
 
-Moonlight 的独立工作线程每约 250 ms 请求状态，不依赖前台焦点或剪贴板开关。不跟随 HTTP 跳转，固定主机配对证书，限制响应长度和超时。未知状态、请求失败或不匹配证书不应用旧状态；断开串流即销毁工作线程。
+客户端在本机应用获得焦点时发送真实本机模式；此类请求的回复只作确认，绝不改写本机。串流获得焦点时请求状态 0，只有请求开始和回复到达时均仍聚焦串流才应用到上次本机后台输入上下文。请求期间切回本机则丢弃该次远端写回，避免覆盖本机切换。未知状态不作为英文发送。循环约 250 ms，使用固定配对证书 HTTPS、禁止重定向、限定回复长度与超时；断线不应用缓存状态。
 
-本机对当前本机输入框或上次本机输入框设置微软拼音模式并读回校验：英文值为 0，中文值为 `IME_CMODE_NATIVE | IME_CMODE_SYMBOL`。仅将 `0x401` 清除 NATIVE 得到 `0x400` 会被新版微软拼音忽略，因此不能据此宣称切换成功。通过有限超时的 `WM_IME_CONTROL` 操作目标线程的默认 IME 窗口；不注入 Shift，不改变用户的 Shift 开关。不支持/禁止输入法的窗口不强行启用 IME。本机获得焦点时重新选择实际输入框；后台使用先前验证过进程/线程身份的焦点句柄。
+旧 `/api/v1/focus-ime/state` 与 `FIM1` 空请求读状态接口保留。新客户端收到 v2 的 404 后退回 v1，只在串流前台时允许远端写回，不覆盖本机前台；本机至远端功能需新 Sunshine。原设置存储键 `syncImeFromHost` 为兼容已有配置继续使用，界面显示双向同步。
 
-Windows API 依据：[ImmGetDefaultIMEWnd](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immgetdefaultimewnd)、[WM_IME_CONTROL](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-control)。具体模式值及后台/跨进程行为还经 `tests/test-ime.cpp` 的真实微软拼音输入验证。
+直接通过有限超时 `WM_IME_CONTROL` 设置并读回微软拼音模式，英文为 0，中文为 `IME_CMODE_NATIVE | IME_CMODE_SYMBOL`。不注入 Shift、不改变用户的快捷键绑定，不读取输入文本或候选词。目标 HWND/进程/线程/焦点身份需匹配；服务器在当前输入桌面执行，焦点改变时不确认其他窗口的状态。
+
+Windows API 依据：[ImmGetDefaultIMEWnd](https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immgetdefaultimewnd)、[WM_IME_CONTROL](https://learn.microsoft.com/en-us/windows/win32/intl/wm-ime-control)。焦点方向与版本隔离见 `tests/test-ime-focus.cpp`；真实输入框验证见 `tests/test-ime.cpp`，各次验证结果以验证记录为准。
 
 ## 锁定键
 

@@ -1230,6 +1230,45 @@ namespace nvhttp {
         reader.join();
         response->write(web::StatusCode::ok, focusime::encode(mode), headers);
       };
+    // ImeSync2: actual local mode may be applied by the active paired client.
+    // Unknown means read-only. No key injection, text or IME settings changes.
+    https_server.resource["^/api/v2/focus-ime/state$"]["POST"] =
+      [&](resp_https_t response, req_https_t request) {
+        const web::CaseInsensitiveMultimap headers {
+          {"Content-Type", "application/octet-stream"}, {"Cache-Control", "no-store"}
+        };
+        const auto client = get_client_cert_uuid_from_request(request);
+        bool active = false;
+        for (const auto &session : stream::session::get_all_sessions_info())
+          if (session.client_uuid == client && session.control_connected) active = true;
+        if (!config::input.keyboard || !is_client_paired(client) || !active) {
+          response->write(web::StatusCode::forbidden, "IME sync requires an active paired stream", headers);
+          return;
+        }
+        focusime::Mode desired = focusime::Mode::unknown;
+        if (!focusime::decode(request->content.string(), desired, '2')) {
+          response->write(web::StatusCode::bad_request, "Invalid ImeSync2 state", headers);
+          return;
+        }
+        focusime::Mode mode = focusime::Mode::unknown;
+        std::thread worker([&] {
+          auto desktop = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
+          if (!desktop) return;
+          auto previous = GetThreadDesktop(GetCurrentThreadId());
+          if (SetThreadDesktop(desktop)) {
+            const auto target = focusime::foreground();
+            if (focusime::known(desired) && GetForegroundWindow() == target.root)
+              focusime::apply(target, desired, target.root);
+            const auto after = focusime::foreground();
+            // A focus change while applying must not acknowledge another app.
+            if (after.root == target.root && after.focus == target.focus) mode = after.mode;
+            SetThreadDesktop(previous);
+          }
+          CloseDesktop(desktop);
+        });
+        worker.join();
+        response->write(web::StatusCode::ok, focusime::encode(mode, '2'), headers);
+      };
     https_server.resource["^/api/v1/focus-clipboard/(state|read|begin|write|commit|cancel)$"]["POST"] =
       [&](resp_https_t response, req_https_t request) {
         web::CaseInsensitiveMultimap headers;

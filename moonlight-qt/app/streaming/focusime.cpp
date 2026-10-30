@@ -17,7 +17,7 @@ FocusIme::FocusIme(NvComputer* computer) :
     certificate(computer->serverCert), ssl(IdentityManager::get()->getSslConfig())
 {
     base.setScheme("https"); base.setHost(computer->activeAddress.address()); base.setPort(computer->activeHttpsPort);
-    base.setPath(QStringLiteral("/api/v1/focus-ime/state"));
+    base.setPath(QStringLiteral("/api/v2/focus-ime/state"));
 #ifdef Q_OS_WIN
     initialWindow = GetForegroundWindow();
 #endif
@@ -33,7 +33,7 @@ void FocusIme::setStreamWindow(SDL_Window* window) {
 }
 void FocusIme::run() {
 #ifdef Q_OS_WIN
-    if (certificate.isNull()) { qWarning() << "Host IME sync requires a paired certificate"; return; }
+    if (certificate.isNull()) { qWarning() << "IME sync requires a paired certificate"; return; }
     QNetworkAccessManager network;
     QObject::connect(&network, &QNetworkAccessManager::encrypted, &network, [&](QNetworkReply* reply) {
         if (reply->sslConfiguration().peerCertificate() != certificate) reply->abort();
@@ -46,14 +46,23 @@ void FocusIme::run() {
     auto local = focusime::inspect(static_cast<HWND>(initialWindow));
     focusime::Mode lastReported = focusime::Mode::unknown;
     unsigned failedApplies = 0;
+    unsigned failedHostApplies = 0;
+    bool legacy = false;
     QString lastError;
-    qInfo() << "Host-authoritative IME synchronization started (background polling)";
+    qInfo() << "Focus-directed IME synchronization started (ImeSync2)";
     while (!stopping) {
+        const bool streamAtRequest = GetForegroundWindow() == static_cast<HWND>(streamWindow);
+        auto active = focusime::foreground();
+        if (!streamAtRequest && active.root && active.root != static_cast<HWND>(streamWindow)) local = active;
+        // Local focus never receives a remote write. The actual local state is
+        // sent directly, so disabling Shift locally remains meaningful.
+        const auto desired = focusime::requestedMode(streamAtRequest, active.mode);
+        auto wire = focusime::encode(desired, '2');
         QNetworkRequest request(base);
         request.setSslConfiguration(ssl);
         request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         request.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
-        auto reply = network.post(request, QByteArray());
+        auto reply = network.post(request, legacy ? QByteArray() : QByteArray(wire.data(), int(wire.size())));
         reply->setReadBufferSize(6);
         QEventLoop loop; QTimer timer; timer.setInterval(25);
         unsigned ticks = 0;
@@ -74,22 +83,32 @@ void FocusIme::run() {
         delete reply;
         if (stopping) break;
         focusime::Mode remote = focusime::Mode::unknown;
-        if (ok && focusime::decode(std::string(bytes.constData(), size_t(bytes.size())), remote)) {
+        if (status == 404 && !legacy && trusted) {
+            // Old Sunshine remains usable. Never restore the old behaviour that
+            // repeatedly overwrote local input while the user was working there.
+            legacy = true;
+            base.setPath(QStringLiteral("/api/v1/focus-ime/state"));
+            qWarning() << "Sunshine requires ImeSync2 for local-to-host IME sync; local changes are preserved";
+            continue;
+        }
+        if (ok && focusime::decode(std::string(bytes.constData(), size_t(bytes.size())), remote, legacy ? '1' : '2')) {
             lastError.clear();
+            if (!legacy && focusime::known(desired) && remote != desired) {
+                if (++failedHostApplies == 40) qWarning() << "IME sync: remote input context did not accept local mode";
+            } else failedHostApplies = 0;
             if (remote != focusime::Mode::unknown) {
-                auto active = focusime::foreground();
-                if (active.root && active.root != static_cast<HWND>(streamWindow)) local = active;
-                // The stream itself deliberately has no local IME context. Keep
-                // the last local app synchronized in the background; re-inspect
-                // the actual foreground app on every poll when local focus returns.
-                bool applied = focusime::apply(local, remote);
+                const bool streamAtReply = GetForegroundWindow() == static_cast<HWND>(streamWindow);
+                bool applied = true;
+                if (focusime::mayApplyRemote(streamAtRequest, streamAtReply, remote)) {
+                    applied = focusime::apply(local, remote, static_cast<HWND>(streamWindow));
+                }
                 if (remote != lastReported) {
-                    qInfo() << "Host-authoritative IME:" << (remote == focusime::Mode::chinese ? "Chinese" : "English");
+                    qInfo() << "Focus-directed IME host state:" << (remote == focusime::Mode::chinese ? "Chinese" : "English");
                     lastReported = remote;
                 }
                 if (applied) failedApplies = 0;
                 else if (++failedApplies == 40) {
-                    qWarning() << "Host IME sync waiting for an accessible Microsoft Pinyin input context";
+                    qWarning() << "IME sync waiting for an accessible Microsoft Pinyin input context";
                 }
             }
         } else {

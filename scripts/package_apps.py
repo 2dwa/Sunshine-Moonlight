@@ -75,7 +75,7 @@ for name, path, source in [('Moonlight-Focus',moon,configured('moonlightSource')
         shutil.copy2(root/'docs/admin-autostart-zh-CN.txt',path/'高权限开机自启说明.txt')
     (path/'BUILD-INFO.txt').write_text(f'{name} custom focus-sync build 2026-10-30\nSource: {source.name}\nNot an official upstream release.\n',encoding='utf-8')
     with (path/'BUILD-INFO.txt').open('a', encoding='utf-8') as info:
-        info.write('Host-authoritative IME synchronization: ImeSync1\n')
+        info.write('Focus-directed bidirectional IME synchronization: ImeSync2\n')
         info.write('Bidirectional selectable USB: UsbSync1\n')
     if name.startswith('Sunshine'):
         with (path/'BUILD-INFO.txt').open('a', encoding='utf-8') as info:

@@ -4,20 +4,10 @@
 #include <windows.h>
 #include <imm.h>
 #include <string>
+#include "focusime_protocol.h"
 
 namespace focusime {
 constexpr unsigned capability = 0x10000000;
-enum class Mode : unsigned char { unknown = 0, english = 1, chinese = 2 };
-
-inline std::string encode(Mode mode) {
-    return std::string("FIM1") + char(mode);
-}
-inline bool decode(const std::string& bytes, Mode& mode) {
-    if (bytes.size() != 5 || bytes.compare(0, 4, "FIM1") != 0 ||
-        static_cast<unsigned char>(bytes[4]) > 2) return false;
-    mode = static_cast<Mode>(bytes[4]);
-    return true;
-}
 struct Target {
     HWND root = nullptr;
     HWND focus = nullptr;
@@ -66,7 +56,8 @@ inline Target foreground() {
     auto result = inspect(window);
     return GetForegroundWindow() == window ? result : Target{};
 }
-inline bool apply(const Target& original, Mode desired) {
+inline bool apply(const Target& original, Mode desired, HWND expectedForeground = nullptr) {
+    if (expectedForeground && GetForegroundWindow() != expectedForeground) return false;
     if (desired != Mode::english && desired != Mode::chinese) return false;
     auto target = inspect(original.root, original.focus);
     // A recycled HWND or focus change must not redirect a pending update.
@@ -81,6 +72,7 @@ inline bool apply(const Target& original, Mode desired) {
         int count = GetKeyboardLayoutList(64, layouts);
         for (int i = 0; i < count; ++i) {
             if (LOWORD(reinterpret_cast<ULONG_PTR>(layouts[i])) == 0x0804) {
+                if (expectedForeground && GetForegroundWindow() != expectedForeground) return false;
                 PostMessageW(target.focus, WM_INPUTLANGCHANGEREQUEST, 0, reinterpret_cast<LPARAM>(layouts[i]));
                 break;
             }
@@ -92,6 +84,7 @@ inline bool apply(const Target& original, Mode desired) {
     // produces 0x400, which modern Pinyin silently ignores. Do not synthesize
     // Shift: that depends on the user's shortcut settings and can affect apps.
     DWORD conversion = desired == Mode::chinese ? IME_CMODE_NATIVE | IME_CMODE_SYMBOL : 0;
+    if (expectedForeground && GetForegroundWindow() != expectedForeground) return false;
     if (!control(target.ime, 2 /* IMC_SETCONVERSIONMODE */, conversion, result)) return false;
     auto after = inspect(target.root, target.focus);
     return after.focus == target.focus && after.process == target.process && after.mode == desired;

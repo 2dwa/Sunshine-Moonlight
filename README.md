@@ -7,7 +7,7 @@ Windows 双屏串流定制版，同时维护 Moonlight 客户端和 Foundation S
 - 可配置快捷键，在本机与 Moonlight 串流之间切换操作焦点；保留两侧鼠标位置，以黑白鼠标形提示闪烁约 0.5 秒。
 - 串流开启“捕获系统快捷键”后仍支持切回本机。
 - Caps Lock、Num Lock、Scroll Lock 以运行 Moonlight 的本机状态为准同步。
-- 微软拼音中/英以远端 Sunshine 状态为准，串流期间持续同步本机前台或上次使用的输入窗口；不模拟 Shift、不反向改写远端。见 [中英文同步说明](docs/ime-sync-zh-CN.txt)。
+- 微软拼音中/英按操作焦点双向同步：操作本机时本机同步到远端，操作串流时远端同步到本机后台输入框；本机切换不会被远端旧回复改回，不模拟 Shift。见 [中英文同步说明](docs/ime-sync-zh-CN.txt)。
 - Moonlight 主机菜单提供双向 USB 设备选择：本机 → 远端、远端 → 本机，可逐设备共享、连接和释放；独立窗口可在串流时操作。需两端安装可选 USB/IP 组件，见 [USB 说明](docs/usb-bidirectional-zh-CN.txt)。
 - 串流期间双向复制纯文本、文件和文件夹。文件完整接收后再放入目标剪贴板。
 - Foundation Sunshine 启用 RTX HDR、DLSS NR，复用匹配版本的官方适配器，保留原有运行库校验与配置入口。
