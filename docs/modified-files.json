@@ -151,7 +151,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "4ff9456e2f3c69f132630dee77ecf681767c9a38ca1510c36445a31a9cf18dfb"
+    "sha256": "1b9219e355c5a28b96b1942de26629237786a85e0412f16df3da89c4b2da97da"
   },
   {
     "path": "foundation-sunshine/src/main.cpp",
@@ -285,5 +285,12 @@
     "contributor": "GPT-6 Astra",
     "license": "MIT",
     "sha256": "a28488895f08193ace81ba7dd41b95511617c190ea167c9eedbdfcf5198741bd"
+  },
+  {
+    "path": "foundation-sunshine/src/keyboard_lock_packet.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "4caf54d67108169bacb0f09ba133191880695c36633bfa57364496aadbd58a80"
   }
 ]

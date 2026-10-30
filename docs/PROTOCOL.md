@@ -4,6 +4,8 @@
 
 Sunshine 能力位 `0x40000000` 表示支持此扩展。客户端用保留组合 `VK=0`、`KEY_ACTION_UP`、`flags=0x80` 发送目标锁定状态，modifier 低三位依次表示 Caps/Num/Scroll。服务端严格校验后只注入状态不同的键；按下和释放成对发送。与不支持此扩展的主机连接时禁用同步。
 
+注意上游 `NV_KEYBOARD_PACKET::flags` 类型为 `char`，必须转换为无符号字节后比较 `0x80`；直接比较会在 Windows 默认 signed char 编译下丢弃所有状态包。`tests/test-lock-packet.cpp` 用真实数据包结构覆盖此回归。
+
 ## 文本和文件剪贴板
 
 能力位为 `0x20000000`，复用已配对证书验证的 GameStream HTTPS，无额外监听端口。所有请求使用 POST：

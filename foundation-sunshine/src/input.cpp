@@ -22,6 +22,7 @@ extern "C" {
 #include "config.h"
 #include "globals.h"
 #include "input.h"
+#include "keyboard_lock_packet.h"
 #include "text_context/bridge.h"
 #include "input_activity.h"
 #include "pen_barrel_roll.h"
@@ -1030,9 +1031,9 @@ namespace input {
     // key-up only. Consume before modifiers, key mapping, repeat or key tracking.
     if (packet->flags & 0x80) {
 #ifdef _WIN32
-      if (packet->flags == 0x80 && packet->keyCode == 0 &&
-          util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC &&
-          (static_cast<unsigned char>(packet->modifiers) & ~7u) == 0) {
+      if (keyboard_locks::valid_packet(packet->flags, packet->keyCode,
+                                      util::endian::little(packet->header.magic) == KEY_UP_EVENT_MAGIC,
+                                      static_cast<unsigned char>(packet->modifiers))) {
         platf::sync_keyboard_locks(static_cast<unsigned char>(packet->modifiers));
       }
 #endif

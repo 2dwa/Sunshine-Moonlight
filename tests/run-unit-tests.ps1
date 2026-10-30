@@ -10,6 +10,13 @@ $env:PATH = "$(Join-Path $msys 'ucrt64/bin');$env:PATH"
 New-Item -ItemType Directory -Path (Join-Path $repo 'out/tests') -Force | Out-Null
 Push-Location $repo
 try {
+    # Exercise the actual upstream wire structure under both char defaults.
+    foreach ($charMode in @('-fsigned-char', '-funsigned-char')) {
+        & $compiler '-std=c++17' '-O2' $charMode '-I.' '-Ifoundation-sunshine/third-party' 'tests/test-lock-packet.cpp' '-o' 'out/tests/test-lock-packet.exe'
+        if ($LASTEXITCODE -ne 0) { throw 'Lock packet compilation failed' }
+        & './out/tests/test-lock-packet.exe'
+        if ($LASTEXITCODE -ne 0) { throw "Lock packet regression failed: $charMode" }
+    }
     foreach ($name in @('test-lock-state','test-focus-shortcut','test-clipboard','test-console-startup')) {
         $extra = @()
         if ($name -eq 'test-console-startup') { $extra = @('-mwindows') }
