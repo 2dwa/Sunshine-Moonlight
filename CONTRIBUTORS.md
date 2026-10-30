@@ -5,6 +5,7 @@
 - **Moonlight Game Streaming Project 及其贡献者**：Moonlight 原始实现。保留 `moonlight-qt/` 内的原署名、版权和许可文件。
 - **Foundation Sunshine / AlkaidLab、qiin2333、LizardByte / Sunshine 及其贡献者**：服务端原始实现。保留 `foundation-sunshine/` 内的原署名、版权和许可文件。
 - **Sunshine Control Panel 上游贡献者**：控制面板原始实现；其 MIT LICENSE 中的 **Copyright (c) 2021 Deluze** 原样保留。
+- **qiin2333/moonlight-qt 及其贡献者（含 aldobarr 的 USB I/O 线程工作）**：客户端 USB 加密隧道参考实现；固定来源和采用文件见 `UPSTREAMS.json`。
 - 各第三方库、工具、图标和其他资源的作者：见各组件原文件、固定提交子模块和其中的许可/声明。
 
 这是基于固定上游提交整理的源码快照，不伪装为上游原始 Git 历史。完整上游提交历史与作者记录可通过 `UPSTREAMS.json` 中的来源仓库和提交追溯。

@@ -4,7 +4,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "c9b3a8a9974d2f715c721c8f5c1b3116e6ed19a1250f261ac8a787d29d9a688b"
+    "sha256": "c8bd8fdb2960a9ae0769ae5090b2274576b8707ff34dffa127ca734157385455"
   },
   {
     "path": "moonlight-qt/app/backend/autoupdatechecker.cpp",
@@ -165,7 +165,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "e91413d7c2b56f92e6c6c39cf029160d3bd2bd05ccd26009272ab8d33030cae5"
+    "sha256": "068ce8343e74773a6d710bba063aaa62b095c6d1c78adabccc95e49c07833728"
   },
   {
     "path": "foundation-sunshine/src/platform/common.h",
@@ -327,5 +327,117 @@
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
     "sha256": "f86ca181af2adbfa07983701eaec2ad0b30f97fdbb54533979c847269900fc31"
+  },
+  {
+    "path": "moonlight-qt/app/main.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "092efb417dd8a31140fedc64ffb4e37c814c653c0df0376438f849446ab89898"
+  },
+  {
+    "path": "moonlight-qt/app/qml.qrc",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "72ef099812dfd6a45077facf1e1ac54695f6f9c53b9f6a2704362709994fbdde"
+  },
+  {
+    "path": "moonlight-qt/app/gui/PcView.qml",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "16f5f83f7d9a11c39ccb0e877ea58539728c4a0c4e3a8c6907e5d06cd3a66d8a"
+  },
+  {
+    "path": "moonlight-qt/app/gui/computermodel.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "dcde909a22afe13feadf1890ad117e58decd33f4afeeb4110a53aca6d42dd136"
+  },
+  {
+    "path": "moonlight-qt/app/gui/computermodel.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "a44018ae9a91461d420f849dc8f7317445108a8aaae4f451c09d55e1d251e57d"
+  },
+  {
+    "path": "moonlight-qt/app/gui/UsbWindow.qml",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "9cce3fbe35e1f2fe7b53612a1ffa3b9799bc282f112f4c0a825d9bebb9450c8c"
+  },
+  {
+    "path": "moonlight-qt/app/backend/usbmanager.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "7f27e913c4a6985b6eb31b7e535865515ba2a80058d71ff634f27440f9a2c0a5"
+  },
+  {
+    "path": "moonlight-qt/app/backend/usbmanager.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "52675b9b38738d5c9f79207515d3e4d3fda72cb2b901e969d60454cc58028e11"
+  },
+  {
+    "path": "moonlight-qt/app/backend/usbforwardingtunnel.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "d1ca7f9398bd554d84b03d3094af819b3d94cd0803499aa32ef65646955f4ef9"
+  },
+  {
+    "path": "moonlight-qt/app/backend/usbforwardingtunnel.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "51d2236a0f1f1cc2981541b78c23d68db24127e2548266212b40e8e99798a3e6"
+  },
+  {
+    "path": "moonlight-qt/app/backend/pairedcertificate.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "74f658ab6c56f50cfb3b017cfb8dc0fe7604ab13a7e24c8a00da031c55c75e4c"
+  },
+  {
+    "path": "foundation-sunshine/src/remote_usb/reverse_tunnel_service.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "97882d550b0d07c0f27eea873a1cf26d9b2d73cfa7658f9d7a55536f1ab01048"
+  },
+  {
+    "path": "foundation-sunshine/src/remote_usb/reverse_tunnel_service.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "32e4a6959d7ce25f8fe8cdb2b767a5e159c42320c8e5e1384c43c476023b3f43"
+  },
+  {
+    "path": "foundation-sunshine/src/remote_usb/remote_usb_host_controller.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "12b216580e863b8f5a82bb52ae9a367b5119daf0839a0e570d9de4f552ff380f"
+  },
+  {
+    "path": "foundation-sunshine/src/remote_usb/remote_usb_host_controller.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "046d82809d76c82e6cdf46c7b62c9ef849a694ca77cecf4366bdc15f14a50fcc"
+  },
+  {
+    "path": "foundation-sunshine/src/remote_usb/import_request.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "342c25746a0c3ee5df9a2a60088a9b7d6b9edb36dbcf3318577d6dbfc8033fca"
   }
 ]

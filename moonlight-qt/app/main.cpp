@@ -1,4 +1,9 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 #include <QGuiApplication>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QCryptographicHash>
+#include "backend/usbmanager.h"
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QIcon>
@@ -718,6 +723,45 @@ int main(int argc, char *argv[])
     }
     if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_MATERIAL_VARIANT")) {
         qputenv("QT_QUICK_CONTROLS_MATERIAL_VARIANT", "Dense");
+    }
+
+    // Spawned by the PC menu. Pairing credentials remain in the existing
+    // profile, never in command-line arguments, environment, or temporary files.
+    const auto usbHostId = qEnvironmentVariable("MOONLIGHT_USB_HOST");
+    if (!usbHostId.isEmpty()) {
+        QSettings settings;
+        auto socketName = "Moonlight-USB-" + QString::fromLatin1(QCryptographicHash::hash(
+            (settings.fileName() + usbHostId).toUtf8(), QCryptographicHash::Sha256).toHex());
+        QLocalSocket existing;
+        existing.connectToServer(socketName);
+        if (existing.waitForConnected(300)) { existing.write("raise"); existing.waitForBytesWritten(300); return 0; }
+        QLocalServer server;
+        server.setSocketOptions(QLocalServer::UserAccessOption);
+        if (!server.listen(socketName)) return 1;
+        int hosts = settings.beginReadArray("hostsbackup");
+        if (!hosts) { settings.endArray(); hosts = settings.beginReadArray("hosts"); }
+        std::unique_ptr<NvComputer> selected;
+        for (int i = 0; i < hosts; ++i) {
+            settings.setArrayIndex(i);
+            auto candidate = std::make_unique<NvComputer>(settings);
+            if (candidate->uuid == usbHostId) { selected = std::move(candidate); break; }
+        }
+        settings.endArray();
+        bool ok = false; auto port = qEnvironmentVariable("MOONLIGHT_USB_PORT").toUShort(&ok);
+        if (!selected || selected->serverCert.isNull() || !ok || !port) return 1;
+        selected->activeAddress = NvAddress(qEnvironmentVariable("MOONLIGHT_USB_ADDRESS"), port);
+        selected->activeHttpsPort = port;
+        UsbManager manager(*selected);
+        QQmlApplicationEngine usbEngine;
+        usbEngine.rootContext()->setContextProperty("usbManager", &manager);
+        usbEngine.load(QUrl("qrc:/gui/UsbWindow.qml"));
+        if (usbEngine.rootObjects().isEmpty()) return 1;
+        QObject::connect(&server, &QLocalServer::newConnection, &app, [&] {
+            auto socket = server.nextPendingConnection(); if (socket) socket->deleteLater();
+            auto window = qobject_cast<QWindow*>(usbEngine.rootObjects().first());
+            if (window) { window->showNormal(); window->raise(); window->requestActivate(); }
+        });
+        return app.exec();
     }
 
     QQmlApplicationEngine engine;

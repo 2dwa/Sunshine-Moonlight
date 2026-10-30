@@ -1,3 +1,4 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 #include "backend/computermanager.h"
 #include "streaming/session.h"
 
@@ -38,6 +39,8 @@ public:
     Q_INVOKABLE void pairComputer(int computerIndex, QString pin);
 
     Q_INVOKABLE void testConnectionForComputer(int computerIndex);
+
+    Q_INVOKABLE void openUsbManager(int computerIndex);
 
     Q_INVOKABLE void wakeComputer(int computerIndex);
 

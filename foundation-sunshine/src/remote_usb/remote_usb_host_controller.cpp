@@ -1,3 +1,4 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 /**
  * @file src/remote_usb/remote_usb_host_controller.cpp
  * @brief Structured usbip-win2 process orchestration.
@@ -1428,6 +1429,31 @@ usbip_host_controller::forget_binding_locked(const usbip_host_binding &binding) 
         return candidate == binding;
       }),
     accepted_bindings_.end());
+}
+
+// Contributor: GPT-6 Astra (AI-assisted), 2026-10-30.
+usbip_command_result exporter_command(const std::string &operation, const std::string &busid) {
+  usbip_command_result failure;
+  failure.standard_error = "usbipd-win is not installed in Program Files";
+#ifdef _WIN32
+  if (operation != "state" && operation != "bind" && operation != "unbind") return failure;
+  if (operation != "state" && (busid.empty() || busid.size() > 31 ||
+      busid.find_first_not_of("0123456789-") != std::string::npos)) return failure;
+  for (const char *variable : {"ProgramW6432", "ProgramFiles"}) {
+    const char *base = std::getenv(variable);
+    if (!base || !*base) continue;
+    auto exe = std::filesystem::path(base) / "usbipd-win" / "usbipd.exe";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(exe, error)) continue;
+    std::vector<std::string> args {operation};
+    if (operation != "state") { args.emplace_back("--busid"); args.push_back(busid); }
+    try {
+      return run_process(exe.string(), args, std::chrono::seconds(10),
+                         std::make_shared<std::atomic_bool>(false), 1024 * 1024, [](std::function<void()> f) { return std::thread(std::move(f)); });
+    } catch (const std::exception &e) { failure.standard_error = e.what(); return failure; }
+  }
+#endif
+  return failure;
 }
 
 }  // namespace remote_usb

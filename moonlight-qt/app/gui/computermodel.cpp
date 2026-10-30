@@ -1,6 +1,11 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 #include "computermodel.h"
 
 #include <QThreadPool>
+#include <QProcess>
+#include <QDir>
+#include <QProcessEnvironment>
+#include <QCoreApplication>
 
 ComputerModel::ComputerModel(QObject* object)
     : QAbstractListModel(object) {}
@@ -243,3 +248,20 @@ void ComputerModel::handleComputerStateChanged(NvComputer* computer)
 }
 
 #include "computermodel.moc"
+
+// Independent Qt event loop keeps USB controls usable during SDL streaming.
+void ComputerModel::openUsbManager(int computerIndex) {
+    if (computerIndex < 0 || computerIndex >= m_Computers.size()) return;
+    auto host = m_Computers[computerIndex];
+    QReadLocker lock(&host->lock);
+    if (host->serverCert.isNull() || host->activeAddress.address().isEmpty()) return;
+    QProcess child;
+    auto env = QProcessEnvironment::systemEnvironment();
+    env.insert("MOONLIGHT_USB_HOST", host->uuid);
+    env.insert("MOONLIGHT_USB_ADDRESS", host->activeAddress.address());
+    env.insert("MOONLIGHT_USB_PORT", QString::number(host->activeHttpsPort));
+    child.setProcessEnvironment(env);
+    child.setProgram(QCoreApplication::applicationFilePath());
+    child.setWorkingDirectory(QDir::currentPath());
+    if (!child.startDetached()) qWarning("Cannot launch USB manager");
+}

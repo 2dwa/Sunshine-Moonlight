@@ -1,0 +1,9 @@
+QT += core network
+QT -= gui
+CONFIG += c++17 console
+CONFIG -= app_bundle
+TARGET = test-usb-client
+TEMPLATE = app
+SOURCES += main.cpp ../../moonlight-qt/app/backend/usbforwardingtunnel.cpp
+HEADERS += ../../moonlight-qt/app/backend/usbforwardingtunnel.h
+win32:LIBS += ws2_32.lib

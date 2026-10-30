@@ -1,8 +1,10 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 /**
  * @file src/remote_usb/reverse_tunnel_service.cpp
  */
 
 #include "src/remote_usb/reverse_tunnel_service.h"
+#include "import_request.h"
 
 #include <algorithm>
 #include <array>
@@ -19,6 +21,9 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
+#ifdef _WIN32
+#include <mstcpip.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -80,6 +85,13 @@ namespace remote_usb {
       start(reverse_tunnel_config config) {
         config_ = std::move(config);
         arm_startup_deadline();
+        boost::system::error_code ignored;
+        stream_.lowest_layer().set_option(tcp::socket::keep_alive(true), ignored);
+#ifdef _WIN32
+        tcp_keepalive keepalive{1, 10000, 1000}; DWORD returned = 0;
+        WSAIoctl(stream_.lowest_layer().native_handle(), SIO_KEEPALIVE_VALS,
+                 &keepalive, sizeof(keepalive), nullptr, 0, &returned, nullptr, nullptr);
+#endif
 
         auto self = shared_from_this();
         stream_.async_handshake(ssl::stream_base::server,
@@ -161,7 +173,7 @@ namespace remote_usb {
           return;
         }
 
-        if (op != "forward") {
+        if (op != "forward" && op != "import") {
           reply_error("unknown operation");
           return;
         }
@@ -175,15 +187,57 @@ namespace remote_usb {
           return;
         }
 
-        if (config_.acquire_device_slot && !config_.acquire_device_slot(busid)) {
+        const auto slot = op + ":" + busid;
+        if (config_.acquire_device_slot && !config_.acquire_device_slot(slot)) {
           reply_error("device already forwarded");
           return;
         }
-        slot_busid_ = busid;
+        slot_busid_ = slot;
 
         handshake_.erase(0, newline + 1);
 
-        open_local_endpoint(busid);
+        if (op == "import") open_export_endpoint(busid);
+        else open_local_endpoint(busid);
+      }
+
+      // Host USB -> Moonlight. Only the selected OP_REQ_IMPORT may cross this
+      // connection; a client cannot use it to enumerate or import another busid.
+      void open_export_endpoint(const std::string &busid) {
+        export_busid_ = busid;
+        local_ = std::make_unique<tcp::socket>(stream_.get_executor());
+        auto self = shared_from_this();
+        local_->async_connect(tcp::endpoint(asio::ip::make_address_v4("127.0.0.1"), config_.exporter_port),
+          [self](boost::system::error_code error) {
+            if (self->finished_.load()) return;
+            if (error) { self->reply_error("host usbipd-win service is unavailable"); return; }
+            self->raw_stream_ = true;
+            asio::async_write(self->stream_, asio::buffer(self->ready_line_),
+              [self](boost::system::error_code error, std::size_t) {
+                if (self->finished_.load()) return;
+                if (error) { self->finish(); return; }
+                self->ready_sent_ = true;
+                self->read_selected_import();
+              });
+          });
+      }
+
+      void read_selected_import() {
+        auto self = shared_from_this();
+        if (handshake_.size() >= 40) { begin_selected_import(); return; }
+        asio::async_read(stream_, asio::dynamic_buffer(handshake_, kMaxHandshakeBytes),
+          asio::transfer_exactly(40 - handshake_.size()),
+          [self](boost::system::error_code error, std::size_t) {
+            if (self->finished_.load()) return;
+            if (error) { self->finish(); return; }
+            self->begin_selected_import();
+          });
+      }
+
+      void begin_selected_import() {
+        if (!selected_import(handshake_, export_busid_)) { finish(); return; }
+        startup_timer_.cancel();
+        flush_handshake_tail();
+        pump_local_to_remote();
       }
 
       /** Bind an ephemeral loopback port for usbip-win2 to attach to. */
@@ -452,6 +506,7 @@ namespace remote_usb {
       usbip_host_request request_local_;
       usbip_host_controller::operation_id attach_operation_ { 0 };
       std::string slot_busid_;
+      std::string export_busid_;
       std::optional<usbip_host_binding> binding_;
 
       std::string handshake_;

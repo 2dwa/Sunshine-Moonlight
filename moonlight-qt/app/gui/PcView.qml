@@ -1,3 +1,4 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 import QtQuick 2.9
 import QtQuick.Controls 2.2
 import QtQuick.Layouts 1.3
@@ -182,6 +183,12 @@ CenteredGridView {
                         stackView.push(appView)
                     }
                     visible: model.online && model.paired
+                }
+                NavigableMenuItem {
+                    parentMenu: pcContextMenu
+                    text: "双向 USB 设备映射"
+                    visible: model.online && model.paired
+                    onTriggered: computerModel.openUsbManager(index)
                 }
                 NavigableMenuItem {
                     parentMenu: pcContextMenu

@@ -17,3 +17,5 @@
 RTX Video / DLSS 适配器及 NVIDIA 运行库受各自适用许可约束。此仓库仅保留上游公开代码、构建逻辑、声明与固定摘要；不提交 NVIDIA 私有 SDK 或未被原版分发的运行库。配置示例中的官方便携包由构建者自行按上游条件取得。
 
 参考：[GNU GPLv3](https://www.gnu.org/licenses/gpl-3.0.html)、[MIT 许可](https://opensource.org/license/mit)。
+
+USB 隧道采用 qiin2333/moonlight-qt 固定提交的 GPLv3 代码并保留来源。可选 USB 组件由用户运行脚本直接取得官方安装包：usbipd-win（GPLv3）与 usbip-win2（BSD-2-Clause，内部组件遵循各自声明）；本应用包不捆绑这些第三方驱动。固定官方下载链接与摘要保留在 `scripts/usb/Install-USB.ps1`。

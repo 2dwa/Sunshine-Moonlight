@@ -1,4 +1,3 @@
-# Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
 QT += core quick network quickcontrols2 svg
 CONFIG += c++11
 win32:CONFIG += c++17
@@ -194,6 +193,8 @@ SOURCES += \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
     streaming/focusclipboard.cpp \
+    backend/usbmanager.cpp \
+    backend/usbforwardingtunnel.cpp \
     streaming/focusime.cpp \
     streaming/input/focusbridge.cpp \
     streaming/input/focusmode.cpp \
@@ -235,6 +236,9 @@ HEADERS += \
     cli/quitstream.h \
     cli/startstream.h \
     streaming/input/focusbridge.h \
+    backend/usbmanager.h \
+    backend/usbforwardingtunnel.h \
+    backend/pairedcertificate.h \
     streaming/focusime.h \
     streaming/focusime_win.h \
     settings/streamingpreferences.h \

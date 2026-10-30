@@ -170,5 +170,31 @@
       "revision": "cc91cbf6363721d19d135d05ca8e3d8665ea6afd",
       "shallow": "false"
     }
+  ],
+  "usb_reference": {
+    "repository": "https://github.com/qiin2333/moonlight-qt.git",
+    "revision": "a10b810f834cc0ee9e3689693a278bfac7cdfafe",
+    "license": "GPL-3.0",
+    "files": [
+      "app/backend/usbforwardingtunnel.h",
+      "app/backend/usbforwardingtunnel.cpp",
+      "app/backend/pairedcertificate.h",
+      "tests/usb_forwarding_tunnel/main.cpp"
+    ],
+    "changes": "Bidirectional host import, bounded encrypted output queues, graceful drain and Windows keepalive; retain upstream transport and attribution."
+  },
+  "optional_usb_components": [
+    {
+      "repository": "https://github.com/dorssel/usbipd-win",
+      "version": "v5.3.0",
+      "license": "GPL-3.0",
+      "distribution": "User downloads official signed installer through explicit setup script"
+    },
+    {
+      "repository": "https://github.com/vadimgrn/usbip-win2",
+      "version": "v.0.9.8.1",
+      "license": "BSD-2-Clause (component notices apply)",
+      "distribution": "User downloads official signed installer through explicit setup script"
+    }
   ]
 }

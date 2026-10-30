@@ -1,4 +1,3 @@
-// Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
 /**
  * @file src/nvhttp.cpp
  * @brief Definitions for the nvhttp (GameStream) server.
@@ -1121,6 +1120,7 @@ namespace nvhttp {
         }
         nlohmann::json body {
           { "version", 1 },
+          { "bidirectional", true },
           { "enabled", config::nvhttp.usb_forwarding_enabled },
           { "available", usb_forwarding_available },
           { "reason", !config::nvhttp.usb_forwarding_enabled ? "disabled" :
@@ -1132,6 +1132,51 @@ namespace nvhttp {
         }
         resp->write(web::StatusCode::ok, body.dump(), headers);
       };
+#ifdef _WIN32
+    // Explicit per-device sharing, restricted to paired clients and the host's
+    // USB opt-in. usbipd remains a separately installed, signed driver service.
+    std::mutex usb_export_mutex;
+    auto usb_export_api = [&](resp_https_t resp, req_https_t req) {
+      const web::CaseInsensitiveMultimap headers {{"Content-Type", "application/json"}, {"Cache-Control", "no-store"}};
+      auto error = [&](const std::string &message) {
+        resp->write(web::StatusCode::bad_request, nlohmann::json{{"error", message}}.dump(), headers);
+      };
+      if (!is_client_paired(get_client_cert_uuid_from_request(req))) {
+        resp->write(web::StatusCode::unauthorized, "{}", headers); return;
+      }
+      if (!config::nvhttp.usb_forwarding_enabled || !usb_forwarding_available) {
+        error("Enable USB forwarding in Sunshine and restart first"); return;
+      }
+      std::unique_lock lock(usb_export_mutex, std::try_to_lock);
+      if (!lock.owns_lock()) { error("USB operation in progress; retry"); return; }
+      try {
+        auto state = remote_usb::exporter_command("state");
+        if (state.exit_code != 0 || state.timed_out) { error(state.standard_error); return; }
+        auto devices = nlohmann::json::parse(state.standard_output);
+        if (req->method == "GET") { resp->write(web::StatusCode::ok, devices.dump(), headers); return; }
+        auto body = req->content.string();
+        if (body.size() > 4096) { error("Request too large"); return; }
+        auto request = nlohmann::json::parse(body);
+        auto op = request.value("operation", std::string{});
+        auto busid = request.value("busid", std::string{});
+        auto instance = request.value("instance", std::string{});
+        if ((op != "bind" && op != "unbind") || instance.empty()) { error("Invalid USB operation"); return; }
+        bool found = false;
+        for (const auto &device : devices.at("Devices")) {
+          if (device["BusId"] != busid || device["InstanceId"] != instance) continue;
+          if (device.contains("ClientIPAddress") && !device["ClientIPAddress"].is_null() &&
+              device["ClientIPAddress"] != "") { error("Device is in use; disconnect it first"); return; }
+          found = true; break;
+        }
+        if (!found) { error("Device changed or was unplugged; refresh the list"); return; }
+        auto result = remote_usb::exporter_command(op, busid);
+        if (result.exit_code != 0 || result.timed_out) { error(result.standard_error + " (Sunshine requires administrator/service privileges)"); return; }
+        resp->write(web::StatusCode::ok, "{}", headers);
+      } catch (const std::exception &) { error("Invalid usbipd response or request"); }
+    };
+    https_server.resource["^/api/v1/usb-forwarding/devices$"]["GET"] = usb_export_api;
+    https_server.resource["^/api/v1/usb-forwarding/devices$"]["POST"] = usb_export_api;
+#endif
     https_server.resource["^/appasset$"]["GET"] = apps::asset;
     https_server.resource["^/displays$"]["GET"] = display_control::get_displays;
     https_server.resource["^/display-scale-options$"]["GET"] = display_scale::get_options;

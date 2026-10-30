@@ -1,3 +1,4 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 /**
  * @file src/remote_usb/reverse_tunnel_service.h
  * @brief Reverse USB/IP tunnel endpoint for paired Moonlight clients.
@@ -6,8 +7,8 @@
  * usbip-host, USBIPServerForAndroid) through a client-initiated TLS tunnel.
  * This service terminates that tunnel: after a one-line JSON handshake it
  * attaches usbip-win2 to an ephemeral loopback port and pumps opaque bytes in
- * both directions.  No USB/IP parsing happens here — the protocol belongs to
- * the USB/IP server and client at the two ends of the tunnel.
+ * both directions. The host-export direction validates OP_REQ_IMPORT and the
+ * selected busid before passing subsequent USB/IP traffic unchanged.
  *
  * Wire contract (docs/remote-usb-reverse-tunnel.md in moonlight-qt):
  *   C → S: {"op":"forward","token":"<session-token>","busid":"1-2"}\n
@@ -32,6 +33,8 @@ namespace remote_usb {
   struct reverse_tunnel_config {
     std::string bind_address { "0.0.0.0" };
     std::uint16_t port { 47996 };
+    // Local USB exporter; override only in isolated transport fixtures.
+    std::uint16_t exporter_port { 3240 };
     /** Includes unauthenticated connections; checked before allocating buffers. */
     std::size_t max_sessions { 16 };
     std::string certificate_file;

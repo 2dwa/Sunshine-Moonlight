@@ -62,3 +62,9 @@ python scripts/package_apps.py --only sunshine
 产物输出到 `dist/`，包括 NSIS 安装包、便携 ZIP 和 SHA-256 文件。安装器采用独立目录，不自动注册 Windows 服务；覆盖安装修改版 Moonlight 时保留已有 `Moonlight.ini`。
 
 二进制发行时应关联本仓库对应提交的完整源码快照、固定依赖和构建资料，并附带各组件的许可证和声明。`docs/LOCAL-BUILD-SHA256SUMS.txt` 仅记录整理仓库前的本地验收产物，不承诺不同机器重建后具有相同字节摘要。
+
+### USB 回归测试
+
+`./tests/run-usb-tests.ps1` 使用配置文件中的 Qt/MSVC 与 MSYS2，编译实际 Qt 客户端隧道和实际 Sunshine 服务端隧道。模拟端点全部使用回环动态端口，不安装驱动、不读取个人配置、不接管真实 USB。测试包括两个方向的大数据传输、加密输出背压与正常关闭、证书拒绝、设备 ID 限制、令牌拒绝及设备槽重用。需要 Python 3 与 MSYS2 OpenSSL/Boost/nlohmann-json 开发包。
+
+可选驱动安装脚本 `scripts/usb/Install-USB.ps1` 随应用包提供。发行包不包含第三方驱动本体，下载行为只在用户显式选择安装时发生。

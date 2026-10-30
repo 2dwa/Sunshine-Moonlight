@@ -37,3 +37,13 @@ Windows 同步线程使用与原 `syncThreadDesktop()` 相同的输入桌面权�
 ## 启动和重启
 
 Windows Core 为 GUI 子系统，不创建控制台；显式命令行调用保留重定向输出。独立运行与服务运行的区分使用原有 LocalSystem 身份检查，不再依赖 `GetConsoleWindow`。独立进程退出时自行派生新进程，服务模式则由原监督程序恢复。
+
+## UsbSync1 双向 USB
+
+保留原 GET `/api/v1/usb-forwarding` 版本 1，新增 `bidirectional: true`。所有控制请求继续使用配对客户端证书，并检查主机 USB opt-in；设备 API GET/POST `/api/v1/usb-forwarding/devices` 读取 usbipd-win JSON 或执行显式 bind/unbind。POST 包含 operation、busid、instance，须与当前设备匹配；不接受任意命令，不使用强制绑定。
+
+原 TLS `op=forward` 通道继续提供 Moonlight 本机 USB → Sunshine。新增 `op=import` 使用相同配对 TLS 与随机 token，让 Sunshine 连接本机回环 USB/IP exporter；Moonlight 提供临时回环入口给本机 usbip-win2。新方向只允许 USB/IP 0x0111 的 OP_REQ_IMPORT (0x8003)、零状态和完全匹配的 32 字节补零 busid；拒绝通过该通道列举或导入其他设备。设备槽按方向区分，同一个 busid 不会造成两端设备相互冲突。
+
+客户端传输在专用线程执行，明文和加密写入队列均计入限额。对端正常关闭时排空已接收数据，再完成关闭；异常关闭/超时清理所属导入。Windows TCP keepalive 使用 10 秒空闲 / 1 秒间隔。控制 API 与数据均不发送到未匹配配对证书的服务端。
+
+共享设置是 usbipd 的持久配置；释放连接不会偷偷撤销用户已有共享设置。窗口不自动连接设备、不跨重启持久导入。接口仅针对 Windows USB 组件；物理设备兼容性以实测为准。

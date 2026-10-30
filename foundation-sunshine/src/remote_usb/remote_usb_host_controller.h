@@ -1,3 +1,4 @@
+// Modified 2026-10-30 for bidirectional USB; contributor: GPT-6 Astra (AI-assisted).
 /**
  * @file src/remote_usb/remote_usb_host_controller.h
  * @brief Structured host-side USB/IP attach and detach orchestration.
@@ -90,6 +91,9 @@ struct usbip_command_result {
   std::string standard_output;
   std::string standard_error;
 };
+
+// Fixed usbipd-win operations, using only the machine-wide installation.
+usbip_command_result exporter_command(const std::string &operation, const std::string &busid = {});
 
 /**
  * Injectable command runner.  `cancel` is shared with the controller and must
