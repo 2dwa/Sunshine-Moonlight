@@ -63,6 +63,9 @@
 #include "nvhttp/apps.h"
 #include "nvhttp/clipboard_api.h"
 #include "nvhttp/focus_clipboard.h"
+#ifdef _WIN32
+#include "platform/windows/focusime_win.h"
+#endif
 #include "nvhttp/display_control.h"
 #include "nvhttp/display_scale.h"
 #include "nvhttp/dynamic_params.h"
@@ -1149,6 +1152,39 @@ namespace nvhttp {
     // use the confighttp /api/v1/clipboard/* endpoints on loopback.
 #ifdef _WIN32
     focusclip::Server focus_clipboard;
+    // Read-only source for client IME synchronization. Never accepts local mode
+    // writes, and never exposes text, composition contents, or window titles.
+    https_server.resource["^/api/v1/focus-ime/state$"]["POST"] =
+      [&](resp_https_t response, req_https_t request) {
+        web::CaseInsensitiveMultimap headers;
+        headers.emplace("Content-Type", "application/octet-stream");
+        headers.emplace("Cache-Control", "no-store");
+        const auto client = get_client_cert_uuid_from_request(request);
+        bool active = false;
+        for (const auto &session : stream::session::get_all_sessions_info())
+          if (session.client_uuid == client && session.control_connected) active = true;
+        if (!config::input.keyboard || !is_client_paired(client) || !active) {
+          response->write(web::StatusCode::forbidden, "IME state requires an active paired stream", headers);
+          return;
+        }
+        if (!request->content.string().empty()) {
+          response->write(web::StatusCode::bad_request, "IME state request must be empty", headers);
+          return;
+        }
+        focusime::Mode mode = focusime::Mode::unknown;
+        std::thread reader([&] {
+          auto desktop = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
+          if (!desktop) return;
+          auto previous = GetThreadDesktop(GetCurrentThreadId());
+          if (SetThreadDesktop(desktop)) {
+            mode = focusime::foreground().mode;
+            SetThreadDesktop(previous);
+          }
+          CloseDesktop(desktop);
+        });
+        reader.join();
+        response->write(web::StatusCode::ok, focusime::encode(mode), headers);
+      };
     https_server.resource["^/api/v1/focus-clipboard/(state|read|begin|write|commit|cancel)$"]["POST"] =
       [&](resp_https_t response, req_https_t request) {
         web::CaseInsensitiveMultimap headers;

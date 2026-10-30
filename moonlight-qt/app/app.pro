@@ -53,7 +53,7 @@ win32 {
     }
 
     INCLUDEPATH += $$PWD/../libs/windows/include
-    LIBS += ws2_32.lib winmm.lib dxva2.lib ole32.lib gdi32.lib user32.lib d3d9.lib dwmapi.lib dbghelp.lib
+    LIBS += ws2_32.lib winmm.lib dxva2.lib ole32.lib gdi32.lib user32.lib imm32.lib d3d9.lib dwmapi.lib dbghelp.lib
 
     # Work around a conflict with math.h inclusion between SDL and Qt 6
     DEFINES += _USE_MATH_DEFINES
@@ -194,6 +194,7 @@ SOURCES += \
     streaming/input/abstouch.cpp \
     streaming/input/gamepad.cpp \
     streaming/focusclipboard.cpp \
+    streaming/focusime.cpp \
     streaming/input/focusbridge.cpp \
     streaming/input/focusmode.cpp \
     streaming/input/input.cpp \
@@ -234,6 +235,8 @@ HEADERS += \
     cli/quitstream.h \
     cli/startstream.h \
     streaming/input/focusbridge.h \
+    streaming/focusime.h \
+    streaming/focusime_win.h \
     settings/streamingpreferences.h \
     streaming/input/input.h \
     streaming/session.h \

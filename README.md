@@ -7,6 +7,7 @@ Windows 双屏串流定制版，同时维护 Moonlight 客户端和 Foundation S
 - 可配置快捷键，在本机与 Moonlight 串流之间切换操作焦点；保留两侧鼠标位置，以黑白鼠标形提示闪烁约 0.5 秒。
 - 串流开启“捕获系统快捷键”后仍支持切回本机。
 - Caps Lock、Num Lock、Scroll Lock 以运行 Moonlight 的本机状态为准同步。
+- 微软拼音中/英以远端 Sunshine 状态为准，串流期间持续同步本机前台或上次使用的输入窗口；不模拟 Shift、不反向改写远端。见 [中英文同步说明](docs/ime-sync-zh-CN.txt)。
 - 串流期间双向复制纯文本、文件和文件夹。文件完整接收后再放入目标剪贴板。
 - Foundation Sunshine 启用 RTX HDR、DLSS NR，复用匹配版本的官方适配器，保留原有运行库校验与配置入口。
 - 禁用两端软件更新；保留手动安装增强运行库、驱动和工具的功能。
@@ -23,7 +24,7 @@ Windows 双屏串流定制版，同时维护 Moonlight 客户端和 Foundation S
 | `foundation-sunshine/src_assets/common/sunshine-control-panel/` | 控制面板完整源码，原子模块已展开，包含更新禁用修改 |
 | `build/` | 集中环境配置示例、PowerShell 构建脚本 |
 | `scripts/` | 本地打包脚本 |
-| `tests/` | 锁定键、快捷键、剪贴板、无控制台启动与重启验证 |
+| `tests/` | 锁定键、输入法、快捷键、剪贴板、无控制台启动与重启验证 |
 | `docs/` | 使用、构建、协议、变更及验证资料 |
 | `UPSTREAMS.json` | 上游来源、基线提交及第三方子模块固定提交 |
 
@@ -51,6 +52,8 @@ Copy-Item build/environment.example.json build/environment.json
 工具版本、第三方依赖、打包和测试命令见 [构建说明](docs/BUILD.md)。SDK、安装包、个人配置、配对凭据和 NVIDIA 私有运行库不存放在 Git 历史中。SDK/运行库仍需按各自上游许可取得。
 
 ## 验证与限制
+
+输入法同步已通过独立进程的微软拼音前台/后台实际输入测试（14 项），没有注入 Shift，仍待实际双机串流验收。未知或不可访问的输入上下文不强行操作。
 
 已完成 Windows x64 Release 编译、两套编译器下的 40 项剪贴板检查、64 种锁定键组合检查及快捷键回归。无控制台版本已在实际安装目录连续重启两次，后台实例更换后控制面板恢复 HTTP 200。
 

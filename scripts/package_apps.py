@@ -31,7 +31,7 @@ if options.only != 'sunshine':
     (moon/'portable.dat').touch()
     profile = moon/'Moonlight Game Streaming Project'
     profile.mkdir(exist_ok=True)
-    (profile/'Moonlight.ini').write_text('[General]\nfocusSwitchEnabled=true\nfocusSwitchKey=81\nfocusSwitchModifiers=2\nsyncKeyboardLocks=true\nsyncClipboard=true\nmouseacceleration=true\nwindowmode=1\ncapturesyskeys=2\n', encoding='utf-8')
+    (profile/'Moonlight.ini').write_text('[General]\nfocusSwitchEnabled=true\nfocusSwitchKey=81\nfocusSwitchModifiers=2\nsyncKeyboardLocks=true\nsyncImeFromHost=true\nsyncClipboard=true\nmouseacceleration=true\nwindowmode=1\ncapturesyskeys=2\n', encoding='utf-8')
     (moon/'Start Moonlight.cmd').write_text('@echo off\ncd /d "%~dp0"\nstart "" "%~dp0Moonlight.exe"\n', encoding='ascii')
 runtime = configured('msysRoot')/'ucrt64/bin'
 if options.only != 'moonlight':
@@ -66,10 +66,13 @@ for name, path, source in [('Moonlight-Focus',moon,configured('moonlightSource')
     shutil.copy2(root/'docs/usage-zh-CN.txt',path/'使用说明.txt')
     shutil.copy2(root/'CONTRIBUTORS.md',path/'CONTRIBUTORS.md')
     shutil.copy2(root/'docs/LICENSES.md',path/'LICENSES.md')
+    shutil.copy2(root/'docs/ime-sync-zh-CN.txt',path/'中英文同步说明.txt')
     if name.startswith('Sunshine'):
         shutil.copy2(configured('controlPanelSource')/'LICENSE',path/'assets/gui/LICENSE-MIT.txt')
         shutil.copy2(root/'docs/admin-autostart-zh-CN.txt',path/'高权限开机自启说明.txt')
     (path/'BUILD-INFO.txt').write_text(f'{name} custom focus-sync build 2026-10-30\nSource: {source.name}\nNot an official upstream release.\n',encoding='utf-8')
+    with (path/'BUILD-INFO.txt').open('a', encoding='utf-8') as info:
+        info.write('Host-authoritative IME synchronization: ImeSync1\n')
     if name.startswith('Sunshine'):
         with (path/'BUILD-INFO.txt').open('a', encoding='utf-8') as info:
             info.write('Keyboard lock sync revision: LockFix2 (input desktop access)\n')

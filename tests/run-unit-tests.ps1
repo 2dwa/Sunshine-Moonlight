@@ -17,10 +17,10 @@ try {
         & './out/tests/test-lock-packet.exe'
         if ($LASTEXITCODE -ne 0) { throw "Lock packet regression failed: $charMode" }
     }
-    foreach ($name in @('test-lock-state','test-focus-shortcut','test-clipboard','test-console-startup')) {
+    foreach ($name in @('test-lock-state','test-focus-shortcut','test-clipboard','test-console-startup','test-ime')) {
         $extra = @()
         if ($name -eq 'test-console-startup') { $extra = @('-mwindows') }
-        & $compiler '-std=c++17' '-O2' '-I.' '-Ifoundation-sunshine' "tests/$name.cpp" '-o' "out/tests/$name.exe" @extra '-lshell32' '-lole32' '-luser32' '-ladvapi32' '-lwtsapi32'
+        & $compiler '-std=c++17' '-O2' '-I.' '-Ifoundation-sunshine' "tests/$name.cpp" '-o' "out/tests/$name.exe" @extra '-lshell32' '-lole32' '-luser32' '-limm32' '-ladvapi32' '-lwtsapi32'
         if ($LASTEXITCODE -ne 0) { throw "$name compilation failed" }
         if ($name -ne 'test-console-startup') {
             & "./out/tests/$name.exe"

@@ -49,6 +49,8 @@ python tests/test-adapters.py
 
 ## 打包
 
+中英文同步的纯协议检查随 `tests/run-unit-tests.ps1` 执行。实际 Windows 测试需在空闲桌面运行 `out/tests/test-ime.exe --run-interactive`：创建独立进程的微软拼音测试输入框，验证前台/后台状态、英文/中文实际输入和零 Shift 注入，结束恢复初始模式与焦点。此测试不会读取其他应用的文本；未提供参数时不操作桌面。
+
 四个目标构建成功后：
 
 ```powershell

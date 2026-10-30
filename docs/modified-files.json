@@ -4,7 +4,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "8b9fb7f0f5ccc3b444ce26e1640e900857f16c1e789f709d64d957567fc186f7"
+    "sha256": "c9b3a8a9974d2f715c721c8f5c1b3116e6ed19a1250f261ac8a787d29d9a688b"
   },
   {
     "path": "moonlight-qt/app/backend/autoupdatechecker.cpp",
@@ -18,21 +18,21 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "74d5e904a8160403ec32e8eee4e8dad7ab66186620241dcf399398d900e187ef"
+    "sha256": "11bccc18e58d524350f3c556fc72ece039de1b4c7a576bee18906e5fa6f82b59"
   },
   {
     "path": "moonlight-qt/app/settings/streamingpreferences.cpp",
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "2c01335f8dc2af0a23e8ae5d1f2b09410ab7967aab6c2ec18e1a4d3df33f3e22"
+    "sha256": "45d7fda19ce0676e86479f2bfe831a568fedc0319bf997b3c9d4aa5afe161a83"
   },
   {
     "path": "moonlight-qt/app/settings/streamingpreferences.h",
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "c09537f241c2112b65b9bac609d213360d82044501051734f2a8f4a203a71ddc"
+    "sha256": "4f9abae22099dcf76ff4ef84510902be31cb1ae9a683a4268194df438b138ad9"
   },
   {
     "path": "moonlight-qt/app/streaming/input/input.cpp",
@@ -67,7 +67,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "240fc783fe111687200d2cb21915dcb162aad33f079e606c7b530ebe655f2df1"
+    "sha256": "b61e873e501868fc225353448c35c424950458134097c26667c942590533b48d"
   },
   {
     "path": "moonlight-qt/app/streaming/input/focusbridge.h",
@@ -165,21 +165,21 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "8a0a512bf171110addafee237f6a2b42a9a94bbca8d0582b2ec33e48edf0f7a4"
+    "sha256": "e91413d7c2b56f92e6c6c39cf029160d3bd2bd05ccd26009272ab8d33030cae5"
   },
   {
     "path": "foundation-sunshine/src/platform/common.h",
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "e7777d6f06abca36018255a43d6ca5db26040ca664662f982e7e307d88bf6081"
+    "sha256": "fdcf3b0dfd969207b1a4404073930dc6100cd0b9a528b113404629a7cec9eec0"
   },
   {
     "path": "foundation-sunshine/src/platform/windows/input.cpp",
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "b560e12360764c1362aee6a83bb9d527002c2d0b1cc908a25327fd955eae878d"
+    "sha256": "c9ab54c6e0948756449fd76122de0e7cd188a908d1f1ea66464987829905a6d9"
   },
   {
     "path": "foundation-sunshine/src/platform/windows/misc.cpp",
@@ -292,5 +292,40 @@
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
     "sha256": "4caf54d67108169bacb0f09ba133191880695c36633bfa57364496aadbd58a80"
+  },
+  {
+    "path": "moonlight-qt/app/streaming/focusime.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "6899158366f3b11b70b32720499df3d17fc6e596544088e688f4ab1dd06f89e8"
+  },
+  {
+    "path": "moonlight-qt/app/streaming/focusime.cpp",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "b1ad2545b9cdf8c0cf3dcb129a4ea5933138344d0cb4a831fa782797ce643856"
+  },
+  {
+    "path": "moonlight-qt/app/streaming/focusime_win.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "5504ee0bdac9444045be82efde787019a899331c4d31aa6e3db538a6b1d99d1d"
+  },
+  {
+    "path": "foundation-sunshine/src/platform/windows/focusime_win.h",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "5504ee0bdac9444045be82efde787019a899331c4d31aa6e3db538a6b1d99d1d"
+  },
+  {
+    "path": "foundation-sunshine/cmake/compile_definitions/windows.cmake",
+    "date": "2026-10-30",
+    "contributor": "GPT-6 Astra",
+    "license": "GPL-3.0",
+    "sha256": "f86ca181af2adbfa07983701eaec2ad0b30f97fdbb54533979c847269900fc31"
   }
 ]

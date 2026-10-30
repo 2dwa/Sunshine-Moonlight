@@ -133,6 +133,7 @@ void StreamingPreferences::reload()
     focusSwitchEnabled = settings.value("focusSwitchEnabled", false).toBool();
     syncClipboard = settings.value("syncClipboard", true).toBool();
     syncKeyboardLocks = settings.value("syncKeyboardLocks", true).toBool();
+    syncImeFromHost = settings.value("syncImeFromHost", true).toBool();
     focusSwitchKey = settings.value("focusSwitchKey", 0x7B).toInt(); // F12
     focusSwitchModifiers = settings.value("focusSwitchModifiers", 3).toInt(); // Ctrl+Alt
     if (!((focusSwitchKey >= 'A' && focusSwitchKey <= 'Z') ||
@@ -335,6 +336,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_ABSMOUSEMODE, absoluteMouseMode);
     settings.setValue("focusSwitchEnabled", focusSwitchEnabled);
     settings.setValue("syncKeyboardLocks", syncKeyboardLocks);
+    settings.setValue("syncImeFromHost", syncImeFromHost);
     settings.setValue("syncClipboard", syncClipboard);
     settings.setValue("focusSwitchKey", focusSwitchKey);
     settings.setValue("focusSwitchModifiers", focusSwitchModifiers);

@@ -1,3 +1,4 @@
+# Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
 # windows specific compile definitions
 
 add_compile_definitions(SUNSHINE_PLATFORM="windows")
@@ -236,6 +237,7 @@ list(PREPEND PLATFORM_LIBRARIES
         dxgi
         hid
         iphlpapi
+        imm32
         ksuser
         libssp.a
         libstdc++.a

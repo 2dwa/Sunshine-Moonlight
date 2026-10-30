@@ -1,5 +1,6 @@
 // Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
 #include "focusclipboard.h"
+#include "focusime.h"
 #include <memory>
 #include "session.h"
 #include "settings/streamingpreferences.h"
@@ -1774,7 +1775,11 @@ void Session::execInternal()
     }
 
     std::unique_ptr<FocusClipboard> focusClipboard;
+    std::unique_ptr<FocusIme> focusIme;
 #ifdef Q_OS_WIN
+    if (m_Preferences->syncImeFromHost && (LiGetHostFeatureFlags() & 0x10000000U)) {
+        focusIme.reset(new FocusIme(m_Computer));
+    }
     if (m_Preferences->syncClipboard && (LiGetHostFeatureFlags() & 0x20000000U)) {
         focusClipboard.reset(new FocusClipboard(m_Computer));
         focusClipboard->start();
@@ -1892,6 +1897,10 @@ void Session::execInternal()
 #endif
 
     m_InputHandler->setWindow(m_Window);
+    if (focusIme) {
+        focusIme->setStreamWindow(m_Window);
+        focusIme->start();
+    }
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
     QImage svgImage(ICON_SIZE, ICON_SIZE, QImage::Format_RGBA8888);

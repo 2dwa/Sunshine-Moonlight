@@ -335,6 +335,7 @@ namespace platf {
     typedef uint32_t caps_t;
 
     constexpr caps_t focus_clipboard = 0x20000000; // Private text/file clipboard v1
+    constexpr caps_t focus_ime = 0x10000000; // Host-authoritative Microsoft Pinyin mode v1
     constexpr caps_t keyboard_lock_state = 0x40000000; // Private Moonlight focus extension v1
     constexpr caps_t pen_touch = 0x01;  // Pen and touch events
     constexpr caps_t controller_touch = 0x02;  // Controller touch events

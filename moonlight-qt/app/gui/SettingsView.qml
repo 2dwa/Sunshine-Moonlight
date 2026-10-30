@@ -1306,6 +1306,16 @@ Flickable {
                         checked: StreamingPreferences.syncKeyboardLocks
                         onToggled: StreamingPreferences.syncKeyboardLocks = checked
                     }
+                    CheckBox {
+                        text: qsTr("中英文跟随远端（微软拼音，后台持续同步）")
+                        checked: StreamingPreferences.syncImeFromHost
+                        onToggled: StreamingPreferences.syncImeFromHost = checked
+                    }
+                    Label {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: qsTr("串流连接期间，本机中/英跟随远端当前输入窗口；本机修改不会反向同步。串流窗口的按键按远端设置处理。")
+                    }
                     Label {
                         width: parent.width
                         wrapMode: Text.WordWrap

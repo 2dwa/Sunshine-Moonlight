@@ -2678,6 +2678,7 @@ namespace platf {
   platform_caps::caps_t
   get_capabilities(std::string_view client_gamepad) {
     platform_caps::caps_t caps = config::input.keyboard ? platform_caps::keyboard_lock_state : 0;
+    if (config::input.keyboard) caps |= platform_caps::focus_ime;
     if (config::input.clipboard_sync) caps |= platform_caps::focus_clipboard;
 
     const auto selected_mode = selected_gamepad_mode(client_gamepad);

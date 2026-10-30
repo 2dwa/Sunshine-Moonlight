@@ -23,6 +23,8 @@ public:
     Q_PROPERTY(QString focusShortcut READ focusShortcutText NOTIFY focusSettingsChanged)
     bool focusSwitchEnabled;
     bool syncKeyboardLocks;
+    Q_PROPERTY(bool syncImeFromHost MEMBER syncImeFromHost NOTIFY focusSettingsChanged)
+    bool syncImeFromHost;
     Q_PROPERTY(bool syncClipboard MEMBER syncClipboard NOTIFY focusSettingsChanged)
     bool syncClipboard;
     int focusSwitchKey;
