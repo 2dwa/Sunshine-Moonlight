@@ -1,0 +1,259 @@
+#pragma once
+
+// standard includes
+#include <filesystem>
+#include <memory>
+
+// local includes
+#include "parsed_config.h"
+
+namespace display_device {
+
+  /**
+   * @brief Reason for reverting display settings.
+   * @note Used to distinguish different scenarios when reverting settings.
+   */
+  enum class revert_reason_e {
+    stream_ended,      /**< Reverting after stream ended (normal cleanup). */
+    topology_switch,   /**< Reverting before topology switch during config application. */
+    config_cleanup,    /**< Cleaning up when no modifications are needed. */
+    persistence_reset  /**< Resetting persistence data. */
+  };
+
+  /**
+   * @brief A platform specific class that can apply configuration to the display device and later revert it.
+   *
+   * Main goals of this class:
+   *   - Apply the configuration to the display device.
+   *   - Revert the applied configuration to get back to the initial state.
+   *   - Save and load the previous state to/from a file.
+   */
+  class settings_t {
+  public:
+    /**
+     * @brief Platform specific persistent data.
+     */
+    struct persistent_data_t;
+
+    /**
+     * @brief Platform specific non-persistent audio data in case we need to manipulate
+     *        audio session and keep some temporary data around.
+     */
+    struct audio_data_t;
+
+    /**
+     * @brief The result value of the apply_config with additional metadata.
+     * @note Metadata is used when generating an XML status report to the client.
+     * @see apply_config
+     */
+    struct apply_result_t {
+      /**
+       * @brief Possible result values/reasons from apply_config.
+       * @note There is no deeper meaning behind the values. They simply represent
+       *       the stage where the method has failed to give some hints to the user.
+       * @note The value of 700 has no special meaning and is just arbitrary.
+       * @see apply_config
+       */
+      enum class result_e : int {
+        success,
+        topology_fail,
+        primary_display_fail,
+        modes_fail,
+        hdr_states_fail,
+        color_profile_fail,
+        file_save_fail,
+        revert_fail
+      };
+
+      /**
+       * @brief Convert the result to boolean equivalent.
+       * @returns True if result means success, false otherwise.
+       *
+       * EXAMPLES:
+       * ```cpp
+       * const apply_result_t result { result_e::topology_fail };
+       * if (result) {
+       *   // Handle good result
+       * }
+       * else {
+       *   // Handle bad result
+       * }
+       * ```
+       */
+      explicit
+      operator bool() const;
+
+      /**
+       * @brief Get a string message with better explanation for the result.
+       * @returns String message for the result.
+       *
+       * EXAMPLES:
+       * ```cpp
+       * const apply_result_t result { result_e::topology_fail };
+       * if (!result) {
+       *   const int error_message = result.get_error_message();
+       * }
+       * ```
+       */
+      [[nodiscard]] std::string
+      get_error_message() const;
+
+      result_e result; /**< The result value. */
+    };
+
+    /**
+     * @brief A platform specific default constructor.
+     * @note Needed due to forwarding declarations used by the class.
+     */
+    explicit settings_t();
+
+    /**
+     * @brief A platform specific destructor.
+     * @note Needed due to forwarding declarations used by the class.
+     */
+    virtual ~settings_t();
+
+    /**
+     * @brief Check whether it is already known that changing settings will fail due to various reasons.
+     * @returns True if it's definitely known that changing settings will fail, false otherwise.
+     *
+     * EXAMPLES:
+     * ```cpp
+     * settings_t settings;
+     * const bool will_fail { settings.is_changing_settings_going_to_fail() };
+     * ```
+     */
+    bool
+    is_changing_settings_going_to_fail() const;
+
+    /**
+     * @brief Capture and hold the current audio sink until display settings are reverted.
+     * @note This is useful before display topology changes that may make the current
+     *       Windows playback endpoint disappear.
+     */
+    void
+    capture_audio_sink();
+
+    /**
+     * @brief Release the captured audio sink, restoring it if Sunshine changed it.
+     */
+    void
+    release_audio_sink();
+
+    /**
+     * @brief Set the file path for persistent data.
+     *
+     * EXAMPLES:
+     * ```cpp
+     * settings_t settings;
+     * settings.set_filepath("/foo/bar.json");
+     * ```
+     */
+    void
+    set_filepath(std::filesystem::path filepath);
+
+    /**
+     * @brief Apply the parsed configuration.
+     * @param config A parsed and validated configuration.
+     * @returns The apply result value.
+     * @see apply_result_t
+     * @see parsed_config_t
+     *
+     * EXAMPLES:
+     * ```cpp
+     * const parsed_config_t config;
+     *
+     * settings_t settings;
+     * const auto result = settings.apply_config(config);
+     * ```
+     */
+    apply_result_t
+    apply_config(
+      const parsed_config_t &config,
+      const rtsp_stream::launch_session_t &session,
+      const boost::optional<active_topology_t> &pre_saved_initial_topology = boost::none);
+
+    /**
+     * @brief Revert the applied configuration and restore the previous settings.
+     * @param reason The reason for reverting settings, used to determine appropriate cleanup behavior.
+     * @note It automatically loads the settings from persistence file if cached settings do not exist.
+     * @returns True if settings were reverted or there was nothing to revert, false otherwise.
+     *
+     * EXAMPLES:
+     * ```cpp
+     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session; // Assuming ptr is properly initialized
+     * const config::video_t &video_config { config::video };
+     *
+     * settings_t settings;
+     * const auto result = settings.apply_config(video_config, *launch_session);
+     * if (result) {
+     *   // Wait for some time
+     *   settings.revert_settings(revert_reason_e::stream_ended);
+     * }
+     * ```
+     */
+    bool
+    revert_settings(revert_reason_e reason = revert_reason_e::stream_ended, bool skip_vdd_destroy = false);
+
+    /**
+     * @brief Reset the persistence and currently held initial display state.
+     * @see session_t::reset_persistence for more details.
+     *
+     * EXAMPLES:
+     * ```cpp
+     * const std::shared_ptr<rtsp_stream::launch_session_t> launch_session; // Assuming ptr is properly initialized
+     * const config::video_t &video_config { config::video };
+     *
+     * settings_t settings;
+     * const auto result = settings.apply_config(video_config, *launch_session);
+     * if (result) {
+     *   // Wait for some time
+     *   if (settings.revert_settings()) {
+     *     // Wait for user input
+     *     const bool user_wants_reset { true };
+     *     if (user_wants_reset) {
+     *       settings.reset_persistence();
+     *     }
+     *   }
+     * }
+     * ```
+     */
+   void
+    reset_persistence();
+
+    /**
+     * @brief Check if there is saved persistent data.
+     * @returns True if persistent data exists, false otherwise.
+     */
+    bool
+    has_persistent_data() const;
+
+    /**
+     * @brief Check if VDD is in the initial topology.
+     * @returns True if VDD is in the initial topology, false otherwise.
+     */
+    bool
+    is_vdd_in_initial_topology() const;
+
+    /**
+     * @brief Remove VDD from initial and modified topology.
+     * @param vdd_id The VDD device ID to remove.
+     */
+    void
+    remove_vdd_from_initial_topology(const std::string& vdd_id);
+
+    /**
+     * @brief Replace VDD ID in initial and modified topology.
+     * @param old_id The old VDD device ID.
+     * @param new_id The new VDD device ID.
+     */
+    void
+    replace_vdd_id(const std::string& old_id, const std::string& new_id);
+
+  private:
+    std::unique_ptr<persistent_data_t> persistent_data; /**< Platform specific persistent data. */
+    std::unique_ptr<audio_data_t> audio_data; /**< Platform specific temporary audio data. */
+    std::filesystem::path filepath; /**< Filepath for persistent file. */
+  };
+
+}  // namespace display_device

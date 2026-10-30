@@ -1,0 +1,57 @@
+{
+  "name": "sunshine-gui",
+  "version": "0.0.0-dev",
+  "description": "A GUI for sunshine",
+  "type": "module",
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  },
+  "scripts": {
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-plugins.ps1 -Configuration Debug && tauri dev",
+    "dev-webui": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-plugins.ps1 -Configuration Debug && cross-env WEBUI_DEV_TARGET=https://localhost:3000 tauri dev",
+    "dev:toolbar": "npm run build:renderer && cargo build --manifest-path src-tauri/Cargo.toml && src-tauri\\target\\debug\\sunshine-gui.exe --toolbar",
+    "dev:renderer": "vite --config vite.config.js",
+    "test:renderer": "node --test",
+    "build": "npm run build:native-plugins && tauri build",
+    "build:renderer": "vite build --config vite.config.js",
+    "build:native-plugins": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-native-plugins.ps1",
+    "build:home": "vite build --config vite.home.config.js --mode production",
+    "dev:home": "vite --config vite.home.config.js --mode development",
+    "preview:home": "vite preview --config vite.home.config.js",
+    "build:win": "npm run build:component:win",
+    "build:component:win": "powershell -ExecutionPolicy Bypass -File ./scripts/build-gui-component-installer.ps1",
+    "build:beta": "npm run build:native-plugins && cross-env BETA=true npm run build:renderer && tauri build --features beta",
+    "build:beta:win": "cross-env BETA=true powershell -ExecutionPolicy Bypass -File ./scripts/build-gui-component-installer.ps1 -Beta"
+  },
+  "repository": "https://github.com/qiin2333/sunshine",
+  "author": {
+    "name": "qiin2333",
+    "url": "https://github.com/qiin2333"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "cross-env": "^7.0.3",
+    "esbuild": "^0.28.1",
+    "less": "^4.6.7",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^8.1.0"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@material/material-color-utilities": "^0.2.7",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "dompurify": "^3.4.16",
+    "element-plus": "^2.14.2",
+    "markdown-it": "^14.3.2",
+    "pixi.js": "^8.19.0",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.38",
+    "vue-i18n": "^11.4.6"
+  },
+  "overrides": {
+    "@vueuse/core": "14.4.0"
+  }
+}

@@ -1,0 +1,262 @@
+# windows specific packaging
+
+# Fetch driver dependencies (downloads at configure time)
+include(${CMAKE_MODULE_PATH}/packaging/FetchDriverDeps.cmake)
+
+install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
+
+# The first-party adapter is optional at process startup. Its MSVC runtime is
+# deliberately not bundled; the Control Panel reports when the system runtime
+# must be installed by the user.
+if (TARGET sunshine_rtx_video_adapter)
+  install(FILES "${RTX_VIDEO_ADAPTER_DLL}"
+          DESTINATION "tools/hdr_enhanced/nvidia_rtx_video"
+          COMPONENT application)
+endif ()
+install(FILES "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/adapter/THIRD_PARTY_NOTICES.md"
+        DESTINATION "tools/hdr_enhanced/nvidia_rtx_video"
+        RENAME "RTX_VIDEO_THIRD_PARTY_NOTICES.md"
+        COMPONENT application)
+install(FILES "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/README.md"
+        DESTINATION "tools/hdr_enhanced/nvidia_rtx_video"
+        COMPONENT application)
+
+# The DLSS NR adapter ships first-party; the NVIDIA runtime DLL must be
+# imported by the user and is never part of the package.
+if (TARGET sunshine_dlssnr_adapter)
+  install(FILES "${DLSSNR_ADAPTER_DLL}"
+          "${_dlssnr_build}/NVIDIA-DLSS-LICENSE.txt"
+          "${_dlssnr_source}/NVIDIA-OPTICAL-FLOW-NOTICES.txt"
+          DESTINATION "tools/hdr_enhanced/nvidia_dlssnr"
+          COMPONENT application)
+endif ()
+
+
+# Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
+install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
+
+# Adding tools
+install(TARGETS dxgi-info RUNTIME DESTINATION "tools" COMPONENT dxgi)
+install(TARGETS audio-info RUNTIME DESTINATION "tools" COMPONENT audio)
+
+# Mandatory tools
+install(TARGETS sunshinesvc RUNTIME DESTINATION "tools" COMPONENT application)
+install(TARGETS qiin-tabtip RUNTIME DESTINATION "tools" COMPONENT application)
+
+# The optional self-contained runtime is a separate release asset. The main
+# package carries only its pinned download manifest, keeping the feature
+# installable without adding the complete .NET runtime to every Sunshine copy.
+set(DS5_SIDECAR_PACKAGE_MANIFEST "${CMAKE_BINARY_DIR}/ds5-sidecar-package.json" CACHE FILEPATH
+    "Path to the pinned Sunshine DualSense sidecar package manifest")
+if(EXISTS "${DS5_SIDECAR_PACKAGE_MANIFEST}")
+  install(FILES "${DS5_SIDECAR_PACKAGE_MANIFEST}"
+          DESTINATION "tools"
+          RENAME "ds5-sidecar-package.json"
+          COMPONENT application)
+  set(SUNSHINE_DS5_SIDECAR_PACKAGE_AVAILABLE ON)
+else()
+  message(STATUS "DualSense sidecar package manifest was not generated; optional component install will be unavailable")
+  set(SUNSHINE_DS5_SIDECAR_PACKAGE_AVAILABLE OFF)
+endif()
+
+# Shared tool: nefconw.exe (used by VDD and vmouse install scripts)
+install(FILES "${NEFCON_DRIVER_DIR}/nefconw.exe"
+        DESTINATION "tools"
+        COMPONENT application)
+
+# Mandatory scripts
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/service/"
+        DESTINATION "scripts"
+        COMPONENT assets)
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/migration/"
+        DESTINATION "scripts"
+        COMPONENT assets)
+# Portable initialization and uninstall scripts and language files
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/install_portable.bat"
+        DESTINATION "."
+        COMPONENT application)
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/uninstall_portable.bat"
+        DESTINATION "."
+        COMPONENT application)
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/languages/"
+        DESTINATION "scripts/languages"
+        COMPONENT application)
+# add sunshine environment to PATH
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/path/"
+        DESTINATION "scripts"
+        COMPONENT assets)
+# Configurable options for the service
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/autostart/"
+        DESTINATION "scripts"
+        COMPONENT autostart)
+
+# scripts
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/firewall/"
+        DESTINATION "scripts"
+        COMPONENT firewall)
+set(GENERATED_GAMEPAD_INSTALL_SCRIPT "${CMAKE_BINARY_DIR}/generated/install-gamepad.bat")
+configure_file(
+        "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/gamepad/install-gamepad.bat.in"
+        "${GENERATED_GAMEPAD_INSTALL_SCRIPT}"
+        @ONLY)
+install(FILES "${GENERATED_GAMEPAD_INSTALL_SCRIPT}"
+              "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/gamepad/uninstall-gamepad.bat"
+        DESTINATION "scripts"
+        COMPONENT gamepad)
+if(VIGEMBUS_AVAILABLE)
+  install(FILES "${VIGEMBUS_INSTALLER}"
+          DESTINATION "scripts/gamepad"
+          COMPONENT gamepad)
+endif()
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vsink/"
+        DESTINATION "scripts"
+        COMPONENT vsink)
+# VDD: scripts & shared config from source tree, driver binaries from download cache
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vdd/install-vdd.bat"
+              "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vdd/vdd-device-helper.ps1"
+              "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vdd/uninstall-vdd.bat"
+        DESTINATION "scripts"
+        COMPONENT vdd)
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vdd/driver/vdd_settings.xml"
+        DESTINATION "scripts/driver"
+        COMPONENT vdd)
+if(VDD_DRIVER_AVAILABLE)
+  install(FILES "${VDD_DRIVER_DIR}/ZakoVDD.dll"
+                "${VDD_DRIVER_DIR}/ZakoVDD.inf"
+                "${VDD_DRIVER_DIR}/zakovdd.cat"
+                "${VDD_DRIVER_DIR}/ZakoVDD.cer"
+          DESTINATION "scripts/driver/latest"
+          COMPONENT vdd)
+endif()
+if(VDD_WIN10_DRIVER_AVAILABLE)
+  install(FILES "${VDD_WIN10_DRIVER_DIR}/ZakoVDD.dll"
+                "${VDD_WIN10_DRIVER_DIR}/ZakoVDD.inf"
+                "${VDD_WIN10_DRIVER_DIR}/zakovdd.cat"
+                "${VDD_WIN10_DRIVER_DIR}/ZakoVDD.cer"
+          DESTINATION "scripts/driver/win10"
+          COMPONENT vdd)
+endif()
+
+# Vulkan HDR WSI compatibility layer shipped by newer ZakoVDD releases.
+# Keep these files out of global Vulkan registry state at install time;
+# Sunshine registers the manifest only while an HDR VDD session is active.
+set(VDD_VULKAN_HDR_FILES
+    "${VDD_DRIVER_DIR}/zako_vulkan_hdr_bridge.dll"
+    "${VDD_DRIVER_DIR}/VkLayer_zako_virtual_hdr.json"
+    "${VDD_DRIVER_DIR}/vulkan_hdr_probe.exe")
+set(VDD_VULKAN_HDR_AVAILABLE TRUE)
+foreach(VDD_VULKAN_HDR_FILE IN LISTS VDD_VULKAN_HDR_FILES)
+  if(NOT EXISTS "${VDD_VULKAN_HDR_FILE}")
+    set(VDD_VULKAN_HDR_AVAILABLE FALSE)
+  endif()
+endforeach()
+if(VDD_VULKAN_HDR_AVAILABLE)
+  install(FILES ${VDD_VULKAN_HDR_FILES}
+          DESTINATION "tools/vulkan_hdr"
+          COMPONENT vdd)
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/tools/vulkan_hdr")
+  file(COPY ${VDD_VULKAN_HDR_FILES}
+       DESTINATION "${CMAKE_BINARY_DIR}/tools/vulkan_hdr")
+else()
+  message(STATUS "Zako Vulkan HDR bridge artifacts are not present in the selected VDD package")
+endif()
+
+# vmouse: scripts from source tree, driver binaries + cert from download cache
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vmouse/install-vmouse.bat"
+              "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/vmouse/uninstall-vmouse.bat"
+        DESTINATION "scripts/vmouse"
+        COMPONENT assets)
+if(VMOUSE_DRIVER_AVAILABLE)
+  install(FILES "${VMOUSE_DRIVER_DIR}/ZakoVirtualMouse.dll"
+                "${VMOUSE_DRIVER_DIR}/ZakoVirtualMouse.inf"
+                "${VMOUSE_DRIVER_DIR}/ZakoVirtualMouse.cat"
+                "${VMOUSE_DRIVER_DIR}/ZakoVirtualMouse.cer"
+          DESTINATION "scripts/vmouse/driver"
+          COMPONENT assets)
+endif()
+
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/misc/helper/"
+        DESTINATION "tools"
+        COMPONENT assets)
+
+# Sunshine assets
+install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/assets/"
+        DESTINATION "${SUNSHINE_ASSETS_DIR}"
+        COMPONENT assets)
+
+# Uninstalled assets are tracked by the shared assets build target.
+
+set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}\\\\assets\\\\brand\\\\sunshine.ico")
+
+# The name of the directory that will be created in C:/Program files/
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "${CPACK_PACKAGE_NAME}")
+
+# Setting components groups and dependencies
+set(CPACK_COMPONENT_GROUP_CORE_EXPANDED true)
+set(CPACK_COMPONENT_GROUP_SCRIPTS_EXPANDED true)
+
+# sunshine binary
+set(CPACK_COMPONENT_APPLICATION_DISPLAY_NAME "${CMAKE_PROJECT_NAME}")
+set(CPACK_COMPONENT_APPLICATION_DESCRIPTION "${CMAKE_PROJECT_NAME} main application and required components.")
+set(CPACK_COMPONENT_APPLICATION_GROUP "Core")
+set(CPACK_COMPONENT_APPLICATION_REQUIRED true)
+set(CPACK_COMPONENT_APPLICATION_DEPENDS "assets;gui")
+
+# Virtual Display Driver
+set(CPACK_COMPONENT_VDD_DISPLAY_NAME "Zako Display Driver")
+set(CPACK_COMPONENT_VDD_DESCRIPTION "支持HDR的虚拟显示器驱动安装")
+set(CPACK_COMPONENT_VDD_GROUP "Core")
+
+
+
+# service auto-start script
+set(CPACK_COMPONENT_AUTOSTART_DISPLAY_NAME "Launch on Startup")
+set(CPACK_COMPONENT_AUTOSTART_DESCRIPTION "If enabled, launches Sunshine automatically on system startup.")
+set(CPACK_COMPONENT_AUTOSTART_GROUP "Core")
+
+# assets
+set(CPACK_COMPONENT_ASSETS_DISPLAY_NAME "Required Assets")
+set(CPACK_COMPONENT_ASSETS_DESCRIPTION "Shaders, default box art, and web UI.")
+set(CPACK_COMPONENT_ASSETS_GROUP "Core")
+set(CPACK_COMPONENT_ASSETS_REQUIRED true)
+
+# Windows user-session agent and tray owner
+set(CPACK_COMPONENT_GUI_DISPLAY_NAME "Sunshine GUI and Tray Agent")
+set(CPACK_COMPONENT_GUI_DESCRIPTION "Required Windows tray, pairing UI, and user-session services.")
+set(CPACK_COMPONENT_GUI_GROUP "Core")
+set(CPACK_COMPONENT_GUI_REQUIRED true)
+
+# audio tool
+set(CPACK_COMPONENT_AUDIO_DISPLAY_NAME "audio-info")
+set(CPACK_COMPONENT_AUDIO_DESCRIPTION "CLI tool providing information about sound devices.")
+set(CPACK_COMPONENT_AUDIO_GROUP "Tools")
+
+# display tool
+set(CPACK_COMPONENT_DXGI_DISPLAY_NAME "dxgi-info")
+set(CPACK_COMPONENT_DXGI_DESCRIPTION "CLI tool providing information about graphics cards and displays.")
+set(CPACK_COMPONENT_DXGI_GROUP "Tools")
+
+# superCmds
+set(CPACK_COMPONENT_SUPERCMD_DISPLAY_NAME "super-cmd")
+set(CPACK_COMPONENT_SUPERCMD_DESCRIPTION "Commands that can running on host.")
+set(CPACK_COMPONENT_SUPERCMD_GROUP "Tools")
+
+# firewall scripts
+set(CPACK_COMPONENT_FIREWALL_DISPLAY_NAME "Add Firewall Exclusions")
+set(CPACK_COMPONENT_FIREWALL_DESCRIPTION "Scripts to enable or disable firewall rules.")
+set(CPACK_COMPONENT_FIREWALL_GROUP "Scripts")
+
+# gamepad scripts
+set(CPACK_COMPONENT_GAMEPAD_DISPLAY_NAME "Virtual Gamepad")
+set(CPACK_COMPONENT_GAMEPAD_DESCRIPTION "Scripts to install and uninstall Virtual Gamepad.")
+set(CPACK_COMPONENT_GAMEPAD_GROUP "Scripts")
+
+# include specific packaging
+if(SUNSHINE_DS5_SIDECAR_PACKAGE_AVAILABLE)
+  include(${CMAKE_MODULE_PATH}/packaging/windows_innosetup.cmake)
+else()
+  message(STATUS "Inno Setup targets are disabled because the DualSense sidecar package manifest is missing")
+endif()
+# Legacy NSIS/WiX (kept for reference, no longer used)
+# include(${CMAKE_MODULE_PATH}/packaging/windows_nsis.cmake)
+# include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)

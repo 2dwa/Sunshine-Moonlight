@@ -1,0 +1,161 @@
+# Update driver version pins in cmake/packaging/FetchDriverDeps.cmake
+#
+# Driver binaries are no longer committed to the repo.
+# CMake downloads them at configure time from GitHub Releases.
+# This workflow updates the version pins and creates a PR.
+
+name: Update Driver Versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: 'Which driver to update'
+        required: true
+        type: choice
+        options:
+          - vmouse
+          - vdd
+          - vdd-win10
+          - nefcon
+          - all
+      version:
+        description: 'Release tag (e.g. v1.1.0). Leave empty for latest.'
+        required: false
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [driver-release]
+
+jobs:
+  update-version:
+    name: Update Driver Version Pin
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve versions and update pins
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CMAKE_FILE="cmake/packaging/FetchDriverDeps.cmake"
+
+          COMPONENT="${{ github.event.inputs.component }}"
+          VERSION="${{ github.event.inputs.version }}"
+
+          # Override with repository_dispatch values
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            COMPONENT="${{ github.event.client_payload.component }}"
+            VERSION="${{ github.event.client_payload.version }}"
+            echo "Triggered by repository_dispatch: component=$COMPONENT version=$VERSION"
+          fi
+
+          resolve_latest() {
+            local repo="$1"
+            local tag
+            tag=$(gh api "repos/${repo}/releases/latest" --jq '.tag_name' 2>/dev/null || echo "")
+            echo "$tag"
+          }
+
+          update_pin() {
+            local var_name="$1"
+            local new_version="$2"
+            if [ -z "$new_version" ]; then
+              echo "Warning: empty version for ${var_name}, skipping"
+              return
+            fi
+            echo "Updating ${var_name} to ${new_version}"
+            sed -i "s|set(${var_name} \"[^\"]*\"|set(${var_name} \"${new_version}\"|" "$CMAKE_FILE"
+          }
+
+          resolve_asset_sha256() {
+            local repo="$1"
+            local tag="$2"
+            local asset_name="$3"
+            local digest
+            digest=$(gh api "repos/${repo}/releases/tags/${tag}" \
+              --jq ".assets[] | select(.name == \"${asset_name}\") | .digest" 2>/dev/null || echo "")
+            digest="${digest#sha256:}"
+            if [[ ! "$digest" =~ ^[0-9a-fA-F]{64}$ ]]; then
+              return 1
+            fi
+            echo "${digest,,}"
+          }
+
+          declare -A REPOS=(
+            [vmouse]="AlkaidLab/zako-vmouse-release"
+            [vdd]="qiin2333/zako-vdd"
+            [vdd-win10]="qiin2333/zako-vdd"
+            [nefcon]="nefarius/nefcon"
+          )
+          declare -A VARS=(
+            [vmouse]="VMOUSE_DRIVER_VERSION"
+            [vdd]="VDD_DRIVER_VERSION"
+            [vdd-win10]="VDD_WIN10_DRIVER_VERSION"
+            [nefcon]="NEFCON_VERSION"
+          )
+
+          if [ "$COMPONENT" = "all" ]; then
+            COMPONENTS=(vmouse vdd nefcon)
+          else
+            COMPONENTS=("$COMPONENT")
+          fi
+
+          SUMMARY=""
+          for comp in "${COMPONENTS[@]}"; do
+            repo="${REPOS[$comp]}"
+            var="${VARS[$comp]}"
+            ver="$VERSION"
+
+            if [ "$comp" = "vdd-win10" ] && [ -z "$ver" ]; then
+              echo "Warning: vdd-win10 requires an explicit maintenance release tag, skipping"
+              continue
+            fi
+
+            if [ -z "$ver" ]; then
+              ver=$(resolve_latest "$repo")
+            fi
+
+            if [ -n "$ver" ]; then
+              if [ "$comp" = "nefcon" ]; then
+                asset_name="nefcon_${ver}.zip"
+                if ! sha256=$(resolve_asset_sha256 "$repo" "$ver" "$asset_name"); then
+                  echo "Warning: could not resolve SHA-256 for ${repo}/${asset_name}; skipping"
+                  continue
+                fi
+                update_pin "NEFCON_SHA256" "$sha256"
+              fi
+              update_pin "$var" "$ver"
+              SUMMARY="${SUMMARY}\n- ${comp}: ${ver}"
+            else
+              echo "Warning: could not resolve version for ${comp}"
+            fi
+          done
+
+          echo "SUMMARY<<EOF" >> "$GITHUB_ENV"
+          echo -e "$SUMMARY" >> "$GITHUB_ENV"
+          echo "EOF" >> "$GITHUB_ENV"
+
+          echo "Updated CMake file:"
+          grep -E "^set\((VMOUSE_DRIVER_VERSION|VDD_DRIVER_VERSION|VDD_WIN10_DRIVER_VERSION|NEFCON_VERSION|NEFCON_SHA256)" "$CMAKE_FILE"
+
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "chore: update driver version pins"
+          title: "Update driver versions"
+          body: |
+            Automated update of driver version pins in `FetchDriverDeps.cmake`.
+
+            Updated versions:
+            ${{ env.SUMMARY }}
+
+            CMake will download the new driver binaries at configure time.
+          branch: update-driver-versions
+          delete-branch: true

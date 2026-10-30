@@ -1,0 +1,215 @@
+/**
+ * @file src/stream.h
+ * @brief Declarations for the streaming protocols.
+ */
+#pragma once
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include <boost/asio.hpp>
+
+#include "audio.h"
+#include "crypto.h"
+#include "video.h"
+
+namespace rtsp_stream {
+  struct launch_session_t;
+}
+
+namespace video_fec {
+  class controller_t;
+}
+
+namespace stream {
+  constexpr auto VIDEO_STREAM_PORT = 9;
+  constexpr auto CONTROL_PORT = 10;
+  constexpr auto AUDIO_STREAM_PORT = 11;
+  constexpr auto MIC_STREAM_PORT = 12;  // Port for microphone streaming
+
+  /**
+   * @brief Convert a steady-clock presentation time to the 90 kHz RTP video clock.
+   *
+   * The conversion is performed with a signed intermediate so timestamps just
+   * before the epoch round correctly before the final RTP modulo-2^32 cast.
+   */
+  std::uint32_t
+  video_rtp_timestamp(
+    std::chrono::steady_clock::time_point presentation_time,
+    std::chrono::steady_clock::time_point epoch);
+
+  struct session_t;
+  struct config_t {
+    audio::config_t audio;
+    video::config_t monitor;
+
+    int packetsize;
+    int minRequiredFecPackets;
+    std::shared_ptr<video_fec::controller_t> fec_control;
+    bool fec_feedback = false;
+    int mlFeatureFlags;
+    int controlProtocolType;
+    int audioQosType;
+    int videoQosType;
+
+    uint32_t encryptionFlagsEnabled;
+
+    std::optional<int> gcmap;
+  };
+
+  namespace session {
+    enum class stop_reason_e : int {
+      none,
+      control_disconnect,
+      control_timeout,
+      protocol_error,
+      video_ended,
+      audio_ended,
+      client_cancel,
+      host_terminate,
+    };
+
+    const char *
+    stop_reason_name(stop_reason_e reason);
+
+    enum class state_e : int {
+      STOPPED,  ///< The session is stopped
+      STOPPING,  ///< The session is stopping
+      STARTING,  ///< The session is starting
+      RUNNING,  ///< The session is running
+    };
+
+    struct lifecycle_snapshot_t {
+      state_e state;
+      stop_reason_e stop_reason;
+    };
+
+    class lifecycle_t {
+    public:
+      explicit lifecycle_t(state_e initial_state = state_e::STOPPED) noexcept:
+          _state(initial_state) {}
+
+      state_e
+      state() const noexcept {
+        return _state.load(std::memory_order_acquire);
+      }
+
+      void
+      set_state(state_e state) {
+        std::lock_guard lock(_mutex);
+        _state.store(state, std::memory_order_release);
+      }
+
+      bool
+      request_stop(stop_reason_e reason) {
+        std::lock_guard lock(_mutex);
+        if (_state.load(std::memory_order_relaxed) != state_e::RUNNING) {
+          return false;
+        }
+
+        _stop_reason = reason;
+        _state.store(state_e::STOPPING, std::memory_order_release);
+        return true;
+      }
+
+      lifecycle_snapshot_t
+      snapshot() const {
+        std::lock_guard lock(_mutex);
+        return {
+          _state.load(std::memory_order_relaxed),
+          _stop_reason,
+        };
+      }
+
+    private:
+      mutable std::mutex _mutex;
+      std::atomic<state_e> _state;
+      stop_reason_e _stop_reason { stop_reason_e::none };
+    };
+  }  // namespace session
+
+  // Session information structure for API responses
+  struct session_info_t {
+    std::string client_name;
+    std::string client_uuid;
+    std::string client_address;
+    std::string state;
+    std::string stop_reason;
+    uint32_t session_id;
+    std::int64_t uptime_ms;
+    std::int64_t control_idle_ms;
+    std::int64_t video_idle_ms;
+    std::int64_t audio_idle_ms;
+    bool control_connected;
+    int width;
+    int height;
+    int fps;
+    int bitrate;  // Current bitrate in Kbps
+    bool host_audio;
+    bool enable_hdr;
+    bool enable_mic;
+    bool use_vdd;
+    bool hdr_brightness_reported;
+    std::string hdr_brightness_source;
+    float hdr_max_nits;
+    float hdr_min_nits;
+    float hdr_max_full_frame_nits;
+    std::string app_name;
+    int app_id;
+  };
+
+  namespace session {
+    std::shared_ptr<session_t>
+    alloc(config_t &config, rtsp_stream::launch_session_t &launch_session);
+    int
+    start(session_t &session, const std::string &addr_string);
+    void
+    stop(session_t &session, stop_reason_e reason = stop_reason_e::none);
+    void
+    join(session_t &session);
+    state_e
+    state(session_t &session);
+
+    bool belongs_to_client(const session_t &session, const std::string &uuid);
+
+    bool
+    has_active_video_sessions();
+
+    /**
+     * @brief 请求统一的异步应用取消流程。
+     *
+     * 手动 /cancel 和“所有客户端断开后结束串流”都通过此函数进入同一条清理链路。
+     * 函数只负责提交异步任务，不在调用线程中直接终止应用或恢复显示；任务会在 RTSP
+     * 执行上下文中重新检查条件，并由完成回调释放去重标记、终止应用和恢复显示状态。
+     *
+     * @param source 用于本地日志的触发原因，不会作为外部协议数据发送。
+     * @param require_no_video_session 是否要求任务执行时仍没有视频会话和待处理的 RTSP 票据。
+     */
+    void
+    request_global_cancel(std::string_view source, bool require_no_video_session = false);
+    
+
+
+    /**
+     * @brief Send dynamic parameter change event to a specific client session.
+     * @param client_name The name of the client to target.
+     * @param param The dynamic parameter to change.
+     * @return true if the event was sent successfully, false otherwise.
+     */
+    bool
+    change_dynamic_param_for_client(const std::string &client_name, const video::dynamic_param_t &param);
+
+    /**
+     * @brief Get information about all active sessions.
+     * @return Vector of session information.
+     */
+    std::vector<session_info_t>
+    get_all_sessions_info();
+  }  // namespace session
+}  // namespace stream

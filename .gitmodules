@@ -1,0 +1,77 @@
+[submodule "moonlight-qt/moonlight-common-c/moonlight-common-c"]
+	path = moonlight-qt/moonlight-common-c/moonlight-common-c
+	url = https://github.com/moonlight-stream/moonlight-common-c.git
+[submodule "moonlight-qt/qmdnsengine/qmdnsengine"]
+	path = moonlight-qt/qmdnsengine/qmdnsengine
+	url = https://github.com/cgutman/qmdnsengine.git
+[submodule "moonlight-qt/app/SDL_GameControllerDB"]
+	path = moonlight-qt/app/SDL_GameControllerDB
+	url = https://github.com/gabomdq/SDL_GameControllerDB.git
+[submodule "moonlight-qt/soundio/libsoundio"]
+	path = moonlight-qt/soundio/libsoundio
+	url = https://github.com/cgutman/libsoundio.git
+[submodule "moonlight-qt/h264bitstream/h264bitstream"]
+	path = moonlight-qt/h264bitstream/h264bitstream
+	url = https://github.com/aizvorski/h264bitstream.git
+[submodule "moonlight-qt/libs"]
+	path = moonlight-qt/libs
+	url = https://github.com/cgutman/moonlight-qt-prebuilts.git
+	shallow = true
+[submodule "foundation-sunshine/third-party/build-deps"]
+	path = foundation-sunshine/third-party/build-deps
+	url = https://github.com/AlkaidLab/foundation-build-deps.git
+[submodule "foundation-sunshine/third-party/doxyconfig"]
+	path = foundation-sunshine/third-party/doxyconfig
+	url = https://github.com/LizardByte/doxyconfig.git
+[submodule "foundation-sunshine/third-party/googletest"]
+	path = foundation-sunshine/third-party/googletest
+	url = https://github.com/google/googletest.git
+[submodule "foundation-sunshine/third-party/inputtino"]
+	path = foundation-sunshine/third-party/inputtino
+	url = https://github.com/games-on-whales/inputtino.git
+[submodule "foundation-sunshine/third-party/moonlight-common-c"]
+	path = foundation-sunshine/third-party/moonlight-common-c
+	url = https://github.com/qiin2333/moonlight-common-c.git
+[submodule "foundation-sunshine/third-party/nanors"]
+	path = foundation-sunshine/third-party/nanors
+	url = https://github.com/sleepybishop/nanors.git
+[submodule "foundation-sunshine/third-party/nvenc-headers/1100"]
+	path = foundation-sunshine/third-party/nvenc-headers/1100
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "foundation-sunshine/third-party/nvenc-headers/1200"]
+	path = foundation-sunshine/third-party/nvenc-headers/1200
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "foundation-sunshine/third-party/nvenc-headers/1300"]
+	path = foundation-sunshine/third-party/nvenc-headers/1300
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "foundation-sunshine/third-party/nvenc-headers/1301"]
+	path = foundation-sunshine/third-party/nvenc-headers/1301
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "foundation-sunshine/third-party/AMF"]
+	path = foundation-sunshine/third-party/AMF
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+	shallow = true
+[submodule "foundation-sunshine/third-party/nvapi"]
+	path = foundation-sunshine/third-party/nvapi
+	url = https://github.com/NVIDIA/nvapi.git
+[submodule "foundation-sunshine/third-party/TPCircularBuffer"]
+	path = foundation-sunshine/third-party/TPCircularBuffer
+	url = https://github.com/michaeltyson/TPCircularBuffer.git
+[submodule "foundation-sunshine/third-party/tray"]
+	path = foundation-sunshine/third-party/tray
+	url = https://github.com/LizardByte/tray.git
+[submodule "foundation-sunshine/third-party/ViGEmClient"]
+	path = foundation-sunshine/third-party/ViGEmClient
+	url = https://github.com/LizardByte/Virtual-Gamepad-Emulation-Client.git
+[submodule "foundation-sunshine/third-party/wayland-protocols"]
+	path = foundation-sunshine/third-party/wayland-protocols
+	url = https://github.com/LizardByte-infrastructure/wayland-protocols.git
+[submodule "foundation-sunshine/third-party/wlr-protocols"]
+	path = foundation-sunshine/third-party/wlr-protocols
+	url = https://gitlab.freedesktop.org/wlroots/wlr-protocols.git
+[submodule "foundation-sunshine/third-party/moonlight-audio-haptics"]
+	path = foundation-sunshine/third-party/moonlight-audio-haptics
+	url = https://github.com/AlkaidLab/moonlight-audio-haptics.git
+[submodule "foundation-sunshine/third-party/pyrowave"]
+	path = foundation-sunshine/third-party/pyrowave
+	url = https://github.com/AlkaidLab/pyrowave.git

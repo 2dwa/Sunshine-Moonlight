@@ -1,0 +1,25 @@
+# Local tools, runtime payloads, generated applications and private settings
+/.local/
+/out/
+/dist/
+/build/environment.json
+/build/environment.*.local.json
+**/node_modules/
+**/target/
+**/__pycache__/
+*.pyc
+*.pdb
+*.obj
+*.ilk
+*.log
+*.dmp
+*.user
+*.key
+*.pem
+*.pfx
+*.p12
+**/Moonlight.ini
+**/sunshine.conf
+**/sunshine_state.json
+**/credentials/
+/.vscode/

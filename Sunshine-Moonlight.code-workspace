@@ -1,0 +1,116 @@
+{
+  "folders": [
+    {
+      "name": "Moonlight 6.1 Focus",
+      "path": "moonlight-qt"
+    },
+    {
+      "name": "Foundation Sunshine",
+      "path": "foundation-sunshine"
+    },
+    {
+      "name": "Build configuration",
+      "path": "build"
+    },
+    {
+      "name": "Documentation and tests",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.git": true
+    },
+    "terminal.integrated.profiles.windows": {
+      "Moonlight isolated environment": {
+        "path": "powershell.exe",
+        "args": [
+          "-NoExit",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          ". '${workspaceFolder:Build configuration}/build.ps1' -Target environment"
+        ]
+      }
+    },
+    "terminal.integrated.defaultProfile.windows": "Moonlight isolated environment"
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-vscode.cpptools",
+      "ms-vscode.powershell"
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Build Moonlight Focus",
+        "type": "process",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Build configuration}/build.ps1",
+          "-Target",
+          "moonlight"
+        ],
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "problemMatcher": "$msCompile"
+      },
+      {
+        "label": "Build Sunshine Lock Sync",
+        "type": "process",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Build configuration}/build.ps1",
+          "-Target",
+          "sunshine"
+        ],
+        "group": "build",
+        "problemMatcher": "$gcc"
+      },
+      {
+        "label": "Build Sunshine Web UI",
+        "type": "process",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Build configuration}/build.ps1",
+          "-Target",
+          "sunshine-web"
+        ],
+        "group": "build",
+        "problemMatcher": "$gcc"
+      },
+      {
+        "label": "Build Sunshine Control Panel",
+        "type": "process",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Build configuration}/build.ps1",
+          "-Target",
+          "sunshine-gui"
+        ],
+        "group": "build",
+        "problemMatcher": "$gcc"
+      }
+    ]
+  }
+}

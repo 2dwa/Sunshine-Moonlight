@@ -1,0 +1,194 @@
+name: Build and Release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub Release'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: 'true'
+  RUSTC_WRAPPER: sccache
+
+concurrency:
+  group: gui-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows (x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24.21.0
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # Cache compiler outputs without restoring Cargo's target directory. This
+      # avoids the stale Tauri proc-macro fingerprints previously seen with a
+      # target-directory cache while still reusing unchanged dependency builds.
+      - name: Setup Rust compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Inject version from tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="0.0.0-dev"
+          fi
+          echo "Injecting version: $VERSION"
+
+          # package.json
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # src-tauri/tauri.conf.json
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.version = '$VERSION';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+          "
+
+          # src-tauri/Cargo.toml (replace version in [package] section)
+          sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' src-tauri/Cargo.toml
+
+          # Built-in native tool plugin
+          sed -i '0,/^version = ".*"/s//version = "'"$VERSION"'"/' native-plugins/stylus/Cargo.toml
+
+          echo "Version injected into GUI and native plugin manifests"
+
+      - name: Build frontend
+        run: npm run build:renderer
+
+      - name: Test renderer logic
+        run: npm run test:renderer
+
+      - name: Build native tool plugins
+        shell: pwsh
+        run: ./scripts/build-native-plugins.ps1 -Configuration Release -Target x86_64-pc-windows-msvc
+
+      - name: Test native tool plugin crates
+        run: cargo test --release --manifest-path native-plugins/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Test Tauri backend
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Tauri (release)
+        if: github.event_name != 'pull_request'
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --target x86_64-pc-windows-msvc
+
+      - name: Install NSIS
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build GUI component installer
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: ./scripts/build-gui-component-installer.ps1 -SkipBuild
+
+      - name: Prepare artifacts
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: |
+          $outDir = "artifacts"
+          New-Item -ItemType Directory -Force -Path $outDir
+
+          $targetDir = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          Copy-Item "$targetDir/sunshine-gui.exe" "$outDir/"
+          Copy-Item "$targetDir/alkaidlab-plugin-stylus.dll" "$outDir/"
+
+          # WebView2Loader.dll (if exists — Tauri 2 may embed it)
+          if (Test-Path "$targetDir/WebView2Loader.dll") {
+            Copy-Item "$targetDir/WebView2Loader.dll" "$outDir/"
+          }
+
+          ./scripts/package-gui-bundle.ps1 `
+            -SourceDirectory $targetDir `
+            -OutputPath (Join-Path $outDir 'sunshine-gui-windows-x64.zip')
+
+          $componentInstaller = Get-ChildItem "src-tauri/installer/dist/Sunshine-GUI-Setup-*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $componentInstaller) {
+            throw "Sunshine GUI component installer was not generated"
+          }
+          Copy-Item $componentInstaller.FullName "$outDir/"
+
+          # Print artifact sizes
+          Get-ChildItem $outDir | ForEach-Object {
+            Write-Host "$($_.Name): $([math]::Round($_.Length / 1MB, 2)) MB"
+          }
+
+      - name: Upload artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sunshine-gui-windows-x64
+          path: artifacts/*
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sunshine-gui-windows-x64
+          path: artifacts
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date +%Y.%m%d.%H%M%S)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Sunshine GUI ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

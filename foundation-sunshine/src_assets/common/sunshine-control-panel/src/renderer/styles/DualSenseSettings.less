@@ -1,0 +1,388 @@
+// ========================================
+// DualSense 控制器页 — 像素风设计令牌与样式
+// 设计稿 v3：仅 HUD 保留像素窗锚点，
+// 其余分区为「像素标题 + 横线」，控件保留
+// 块状按钮 / 方角描边的物理感。
+// ========================================
+
+@import './pixel-language.less';
+
+// Shared by the controller view and component manager; selectors use the ds5 namespace.
+.ds5-page {
+  // —— 像素菜单令牌：浅色 = Gura 蓝 ——
+  --ds5-primary: @pixel-primary-light;
+  --ds5-primary-deep: @pixel-primary-deep-light;
+  --ds5-window-line: @pixel-primary-light;
+  --ds5-window-fill: @pixel-window-fill-light;
+  --ds5-window-shadow: @pixel-window-shadow-light;
+  --ds5-hover-fill: rgba(74, 158, 255, .1);
+  .pixel-divider-color(var(--ds5-window-line));
+
+  // —— Element Plus 主色梯度对齐像素令牌 ——
+  --el-color-primary: var(--ds5-primary);
+  --el-color-primary-dark-2: var(--ds5-primary-deep);
+  --el-color-primary-light-3: #7ab8ff;
+  --el-color-primary-light-5: #a2d2ff;
+  --el-color-primary-light-7: rgba(162, 210, 255, .45);
+  --el-color-primary-light-8: rgba(162, 210, 255, .3);
+  --el-color-primary-light-9: #e6f2ff;
+}
+
+.ds5-page {
+  max-width: 860px;
+  .pixel-page-base();
+}
+
+[data-bs-theme='dark'] .ds5-page {
+  // —— 像素菜单令牌：暗色 = 莫兰迪 ——
+  --ds5-primary: @pixel-primary-dark;
+  --ds5-primary-deep: @pixel-primary-deep-dark;
+  --ds5-window-line: @pixel-window-line-dark;
+  --ds5-window-fill: @pixel-window-fill-dark;
+  --ds5-window-shadow: @pixel-window-shadow-dark;
+  --ds5-hover-fill: rgba(212, 165, 165, .12);
+
+  // 只保留本页特有的主色梯度，其余深色 token 由 styles/element-theme.less 统一提供
+  --el-color-primary: var(--ds5-primary);
+  --el-color-primary-dark-2: var(--ds5-primary-deep);
+  --el-color-primary-light-3: rgba(212, 165, 165, .55);
+  --el-color-primary-light-5: rgba(212, 165, 165, .4);
+  --el-color-primary-light-7: rgba(212, 165, 165, .26);
+  --el-color-primary-light-8: rgba(212, 165, 165, .18);
+  --el-color-primary-light-9: rgba(212, 165, 165, .12);
+}
+
+// ============ 页头 ============
+.ds5-eyebrow {
+  margin: 0 0 8px;
+  color: var(--el-text-color-secondary);
+  font-family: var(--pix-font);
+  font-size: 12px;
+  letter-spacing: .35em;
+  text-transform: uppercase;
+}
+.ds5-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 7px; }
+.ds5-title-row h1 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: .02em; }
+.ds5-tag-exp {
+  border: 2px solid var(--el-color-danger);
+  color: var(--el-color-danger);
+  background: transparent;
+  font-family: var(--pix-font);
+  font-size: 11px;
+  letter-spacing: .06em;
+}
+.ds5-intro { margin: 0; color: var(--el-text-color-secondary); font-size: 14px; }
+
+// ============ HUD 像素窗（页面唯一锚点） ============
+.ds5-window {
+  margin-top: 30px;
+  .pixel-window(var(--ds5-window-line), var(--ds5-window-fill), var(--ds5-window-shadow));
+}
+.ds5-window-tab {
+  .pixel-window-tab(var(--ds5-window-line), var(--ds5-window-fill), var(--ds5-primary), var(--ds5-window-shadow));
+}
+.ds5-hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: @pixel-detail-divider;
+}
+.ds5-hud-state { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ds5-status-dot {
+  width: 10px; height: 10px;
+  flex: 0 0 auto;
+  background: var(--el-text-color-placeholder);
+}
+.state-ready .ds5-status-dot { background: var(--el-color-success); box-shadow: 0 0 0 3px var(--el-color-success-light-8); }
+.state-update_available .ds5-status-dot,
+.state-transport_missing .ds5-status-dot,
+.state-in_use .ds5-status-dot { background: var(--el-color-warning); box-shadow: 0 0 0 3px var(--el-color-warning-light-8); }
+.state-repair_required .ds5-status-dot { background: var(--el-color-danger); box-shadow: 0 0 0 3px var(--el-color-danger-light-8); }
+.ds5-hud-label { font-family: var(--pix-font); font-size: 15px; font-weight: 400; letter-spacing: .1em; }
+.ds5-hud-version { color: var(--el-text-color-secondary); font-family: var(--pix-font); font-size: 12px; letter-spacing: .05em; }
+.ds5-hud-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+// 方括号文本操作（低权重动作）
+.ds5-page .el-button.ds5-action {
+  .pixel-bracket-button(var(--ds5-primary));
+}
+
+// ============ 窗内标题行 + 启用开关 ============
+.ds5-headline {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+  padding-top: 16px;
+  p { margin: 0; max-width: 560px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.5; }
+}
+// ============ 分区条目（像素标题 + 横线） ============
+.ds5-section { margin-top: 36px; }
+.ds5-section-head { .pixel-section-head(12px); }
+.ds5-section-label {
+  .pixel-section-label(var(--ds5-primary), 13px);
+}
+.ds5-section-rule { flex: 1; height: 2px; background: var(--ds5-window-line); opacity: .55; }
+
+// ============ 模式菜单列表 ============
+.ds5-mode-list { margin: 0; }
+.ds5-mode-option {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  padding: 13px 10px;
+  border: 0;
+  border-bottom: @pixel-detail-divider;
+  color: var(--el-text-color-secondary);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  &.is-static { cursor: default; }
+  &:disabled { cursor: not-allowed; opacity: .55; }
+  &.is-selected {
+    color: var(--el-text-color-primary);
+    background: var(--ds5-hover-fill);
+    box-shadow: inset 5px 0 0 var(--ds5-primary);
+  }
+  strong { font-size: 14px; font-weight: 600; }
+  small { display: block; margin-top: 2px; color: var(--el-text-color-secondary); font-size: 12.5px; line-height: 1.5; }
+}
+.ds5-mode-option:first-child { border-top: @pixel-detail-divider; }
+.ds5-mode-cursor { color: var(--ds5-primary); font-family: var(--pix-font); visibility: hidden; }
+.ds5-mode-option.is-selected .ds5-mode-cursor { visibility: visible; animation: ds5-cursor-blink 1.2s steps(1) infinite; }
+@keyframes ds5-cursor-blink { 50% { opacity: .25; } }
+
+// 键帽状态片
+.ds5-kbd {
+  min-width: 64px;
+  padding: 3px 8px;
+  border: 2px solid var(--ds5-window-line);
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-blank);
+  font-family: var(--pix-font);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-align: center;
+}
+.ds5-mode-option.is-selected .ds5-kbd { border-color: var(--ds5-primary); color: var(--ds5-primary); }
+
+// ============ 触觉微调 ============
+.ds5-tuning-hint { margin: 0 0 14px; max-width: 620px; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.55; }
+.ds5-mini-label { color: var(--el-text-color-secondary); font-family: var(--pix-font); font-size: 11px; letter-spacing: .18em; }
+.ds5-preset-row { display: flex; gap: 8px; margin-top: 7px; }
+.ds5-preset {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 11px;
+  border: 2px solid var(--ds5-window-line);
+  color: var(--el-text-color-primary);
+  background: var(--el-fill-color-blank);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--ds5-window-shadow);
+  transition: transform .1s ease, box-shadow .1s ease, border-color .1s ease;
+  strong { flex: 0 0 auto; font-size: 12.5px; font-weight: 600; }
+  small { color: var(--el-text-color-secondary); font-size: 11.5px; line-height: 1.4; }
+  &:hover, &:focus-visible { border-color: var(--ds5-primary); transform: translateY(-2px); box-shadow: 0 5px 0 var(--ds5-window-shadow); }
+  &:focus-visible { outline: 2px solid var(--ds5-primary); outline-offset: 2px; }
+  &:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: 0 3px 0 var(--ds5-window-shadow); }
+}
+.ds5-tuning-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin-top: 14px;
+  border: 2px solid var(--ds5-window-line);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--ds5-hover-fill) 80%, transparent), transparent 36%),
+    var(--el-fill-color-blank);
+  box-shadow: 0 3px 0 var(--ds5-window-shadow);
+}
+.ds5-tuning-field {
+  display: grid;
+  grid-template-rows: auto 38px 1fr auto;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px 10px;
+  border-right: 1px solid var(--pixel-divider-color);
+  color: var(--el-text-color-regular);
+}
+.ds5-tuning-field:last-child { border-right: 0; }
+.ds5-tuning-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  strong { color: var(--el-text-color-primary); font-size: 13px; }
+}
+.ds5-tuning-field-tip {
+  display: block;
+  color: var(--el-text-color-secondary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+.ds5-feel-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--ds5-primary);
+  color: var(--ds5-primary);
+  font-family: var(--pix-font);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ds5-eq-fader {
+  display: grid;
+  grid-template-rows: 26px 128px 26px;
+  justify-items: center;
+  justify-content: center;
+  gap: 3px;
+  margin-top: 3px;
+  text-align: center;
+  color: var(--el-text-color-secondary);
+  font-size: 9.5px;
+  line-height: 1.25;
+}
+.ds5-eq-fader > span { display: flex; align-items: center; max-width: 128px; }
+.ds5-tuning-field .el-slider.is-vertical { margin: 0; }
+.ds5-tuning-field .el-slider.is-vertical .el-slider__runway {
+  width: 8px;
+  border-radius: 0;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0 15px, color-mix(in srgb, var(--el-border-color) 65%, transparent) 15px 16px),
+    var(--el-fill-color-dark);
+}
+.ds5-tuning-field .el-slider.is-vertical .el-slider__bar { width: 8px; border-radius: 0; }
+.ds5-tuning-field .el-slider__button {
+  width: 24px;
+  height: 14px;
+  border: 2px solid var(--ds5-primary-deep);
+  border-radius: 0;
+  background: var(--el-fill-color-blank);
+}
+.ds5-exact-value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--el-text-color-placeholder);
+  font-family: var(--pix-font);
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+.ds5-exact-value .el-input-number { width: 72px; }
+.ds5-exact-value .el-input__wrapper { min-height: 26px; }
+.ds5-save-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 20px; }
+.ds5-save-button { min-width: 140px; min-height: 36px; font-weight: 600; }
+.ds5-unsaved-tag { font-weight: 600; }
+
+// 块状按钮 / 方角控件 / reduced-motion 由 ControllersHub.less 的设计语言层
+// 统一套用：ds5-page 仅嵌于 .chub-page 内渲染，随级联获得同样规则。
+.ds5-test-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 14px; }
+.ds5-test-actions .ds5-test-button { min-width: 180px; min-height: 38px; margin: 0; }
+
+// ============ 兼容性 ============
+.ds5-compat-row { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; }
+.ds5-compat-notice {
+  display: flex;
+  gap: 9px;
+  margin: 10px 0 0;
+  color: var(--el-color-warning-dark-2, var(--el-color-warning));
+  font-size: 13px;
+  line-height: 1.55;
+  span { flex: 0 0 auto; font-family: var(--pix-font); font-weight: 700; }
+}
+
+// ============ 提示条 ============
+.ds5-notice { margin: 14px 0 0; padding-inline: 0; background: transparent; }
+
+// ============ 组件状态折叠 ============
+.ds5-details-collapse {
+  margin-top: 0;
+  border: 0;
+  .el-collapse-item__header {
+    border: 0;
+    color: var(--el-text-color-secondary);
+    background: transparent;
+    font-family: var(--pix-font);
+    font-size: 12px;
+    letter-spacing: .14em;
+    // 折叠头自身充当分区标题：后接同款像素横线
+    &::after { content: ''; flex: 1; height: 2px; margin-left: 12px; background: var(--ds5-window-line); opacity: .55; }
+  }
+  .el-collapse-item__wrap { border: 0; background: transparent; }
+  .el-collapse-item__content { padding-bottom: 0; color: inherit; }
+}
+.ds5-health-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(110px, auto) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  min-height: 44px;
+  padding: 9px 6px;
+  border-top: @pixel-detail-divider;
+  font-size: 13px;
+}
+.ds5-health-row:first-child { border-top: 0; }
+.ds5-health-key { color: var(--el-text-color-secondary); }
+.ds5-health-state { display: flex; align-items: center; gap: 7px; font-family: var(--pix-font); font-size: 12px; letter-spacing: .06em;
+  i { width: 8px; height: 8px; background: var(--el-text-color-placeholder); }
+  i.ok { background: var(--el-color-success); }
+  i.busy { background: var(--el-color-primary); }
+  i.warn { background: var(--el-color-warning); }
+  i.bad { background: var(--el-color-danger); }
+}
+.ds5-health-detail { min-width: 0; color: var(--el-text-color-secondary); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+.ds5-panel-footer { display: grid; gap: 8px; padding: 14px 6px 0; color: var(--el-text-color-secondary); font-size: 13px; overflow-wrap: anywhere;
+  details summary { cursor: pointer; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
+// ============ 安装进度卡 ============
+.ds5-operation-card { padding: 14px 0 0;
+  div { display: flex; justify-content: space-between; margin-bottom: 7px; color: var(--el-text-color-secondary); font-size: 13px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds5-preset { transition: none; }
+  .ds5-mode-option.is-selected .ds5-mode-cursor { animation: none; }
+}
+
+@media (max-width: 760px) {
+  .ds5-page { padding: 22px 14px 40px; }
+  .ds5-preset-row { display: grid; grid-template-columns: 1fr 1fr; }
+  .ds5-preset { display: grid; gap: 1px; }
+  .ds5-tuning-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ds5-tuning-field:nth-child(2) { border-right: 0; }
+  .ds5-tuning-field:last-child {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--pixel-divider-color);
+  }
+  .ds5-health-row { grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 8px; }
+  .ds5-health-detail { grid-column: 1 / -1; text-align: left; }
+}
+@media (max-width: 600px) {
+  .ds5-page-header { flex-direction: column; }
+  .ds5-hud-row, .ds5-headline, .ds5-compat-row { flex-direction: column; align-items: flex-start; }
+  .ds5-mode-option { grid-template-columns: 16px minmax(0, 1fr) auto; padding-inline: 4px; }
+  .ds5-tuning-fields { grid-template-columns: minmax(0, 1fr); }
+  .ds5-tuning-field { padding-inline: 8px; border-right: 0; }
+  .ds5-tuning-field:nth-child(n + 2) {
+    border-top: 1px solid var(--pixel-divider-color);
+  }
+  .ds5-tuning-field:last-child { grid-column: auto; }
+  .ds5-tuning-field-head { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .ds5-tuning-field-tip { font-size: 10px; }
+  .ds5-eq-fader > span { max-width: 88px; }
+}

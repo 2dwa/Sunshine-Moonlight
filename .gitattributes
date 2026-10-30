@@ -1,0 +1,20 @@
+* text=auto
+*.patch -text
+*.png binary
+*.jpg binary
+*.webp binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.woff2 binary
+*.md text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.qml text eol=lf
+*.rs text eol=lf
+*.cmake text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf

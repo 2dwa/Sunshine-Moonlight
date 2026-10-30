@@ -1,0 +1,550 @@
+name: Build and Release
+
+# Published releases are owned by sign-and-repackage.yml. Keeping that event
+# out of this workflow prevents a release created below from starting another
+# build-and-release cycle.
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - synchronize
+      - reopened
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      gui_run_id:
+        description: 'Optional successful Panel artifact run; its commit must match the Panel submodule'
+        type: string
+        default: ''
+      rtx_hdr:
+        description: 'RTX HDR support for development branches (official master always requires ON)'
+        type: choice
+        default: AUTO
+        options:
+          - 'AUTO'
+          - 'ON'
+          - 'OFF'
+
+concurrency:
+  group: '${{ github.workflow }}-${{ github.ref }}'
+  cancel-in-progress: true
+
+# The pinned LizardByte release action still composes a Node.js 20 action.
+# Run it on Node.js 24 ahead of GitHub's fall 2026 Node.js 20 removal.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  setup_release:
+    name: Setup Release
+    outputs:
+      publish_release: ${{ steps.setup_release_auto.outputs.publish_release || steps.setup_release_manual.outputs.publish_release }}
+      release_body: ${{ steps.filter_release_contributors.outputs.release_body || steps.setup_release_auto.outputs.release_body || steps.setup_release_manual.outputs.release_body }}
+      release_commit: ${{ steps.setup_release_auto.outputs.release_commit || steps.setup_release_manual.outputs.release_commit }}
+      release_generate_release_notes: ${{ steps.setup_release_auto.outputs.release_generate_release_notes || steps.setup_release_manual.outputs.release_generate_release_notes }}
+      release_tag: ${{ steps.setup_release_auto.outputs.release_tag || steps.setup_release_manual.outputs.release_tag }}
+      release_version: ${{ steps.setup_release_auto.outputs.release_version || steps.setup_release_manual.outputs.release_version }}
+    permissions:
+      contents: write  # read does not work to check squash and merge details
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Release (Auto)
+        id: setup_release_auto
+        if: github.event_name != 'workflow_dispatch'
+        uses: LizardByte/setup-release-action@v2025.426.225
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Release (Manual)
+        id: setup_release_manual
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          SUFFIX=$([ "${{ github.ref_name }}" = "master" ] && echo "" || echo "-dev")
+          echo "publish_release=false" >> $GITHUB_OUTPUT
+          echo "release_body=Manual build (${{ github.ref_name }})" >> $GITHUB_OUTPUT
+          echo "release_commit=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "release_generate_release_notes=false" >> $GITHUB_OUTPUT
+          echo "release_tag=manual-$(date +%Y%m%d-%H%M%S)${SUFFIX}" >> $GITHUB_OUTPUT
+          echo "release_version=manual-$(date +%Y%m%d-%H%M%S)${SUFFIX}" >> $GITHUB_OUTPUT
+
+      - name: Filter bot contributors
+        id: filter_release_contributors
+        if: steps.setup_release_auto.outputs.release_body != ''
+        uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ steps.setup_release_auto.outputs.release_body }}
+        with:
+          script: |
+            const body = process.env.RELEASE_BODY ?? '';
+            const sectionMarker = '## Contributors';
+            const sectionStart = body.lastIndexOf(sectionMarker);
+            if (sectionStart < 0) {
+              core.setOutput('release_body', body);
+              return;
+            }
+
+            // setup-release-action leaves GitHub's [bot] suffix after each
+            // linked author mention. Collect those logins before filtering
+            // only the generated contributor-avatar section.
+            const botLogins = new Set(
+              [...body.matchAll(/\]\(https:\/\/github\.com\/([A-Za-z0-9-]+)\)\[bot\]/gi)]
+                .map(([, login]) => login.toLowerCase()),
+            );
+            const contributors = body.slice(sectionStart);
+            const filteredContributors = contributors.replace(
+              /<a\b[^>]*\bhref="https:\/\/github\.com\/([A-Za-z0-9-]+)"[^>]*>[\s\S]*?<\/a>/gi,
+              (anchor, login) => {
+                if (!botLogins.has(login.toLowerCase())) return anchor;
+                core.info(`Omitting bot from contributor avatars: ${login}`);
+                return '';
+              },
+            );
+
+            core.setOutput('release_body', body.slice(0, sectionStart) + filteredContributors);
+
+  vdd_smoke:
+    name: VDD helper smoke tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run VDD helper smoke tests
+        shell: pwsh
+        run: |
+          & .\src_assets\windows\misc\vdd\smoke-test-vdd-device-helper.ps1
+          & .\src_assets\windows\misc\vdd\smoke-test-install-vdd-selection.ps1
+
+  build_win:
+    name: Windows
+    needs: setup_release
+    permissions:
+      contents: read
+      actions: write  # prune stale ccache entries after saving this run's
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.longpaths
+          GIT_CONFIG_VALUE_0: 'true'
+
+      - name: Setup Dependencies Windows
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ucrt64
+          # Required, not redundant with the `pacman -Syu` below. When
+          # msys2-runtime itself needs upgrading, pacman closes every MSYS2
+          # process to finish the job, which kills the workflow shell and fails
+          # the step with exit 1. setup-msys2 performs that upgrade with the
+          # restart it needs; by the time our own step runs, the runtime is
+          # already current and only the dependency list is left to install.
+          update: true
+          install: >-
+            wget
+            curl
+
+      - name: Update Windows dependencies
+        env:
+          opus_version: '1.6.1-1'
+        shell: msys2 {0}
+        run: |
+          # download pinned opus version
+          opus_tarball="mingw-w64-ucrt-x86_64-opus-${opus_version}-any.pkg.tar.zst"
+          wget https://repo.msys2.org/mingw/ucrt64/${opus_tarball}
+
+          # install dependencies
+          # NOTE: gcc/gcc-libs were previously pinned to 15.1.0-5 to work around
+          # a broken upstream gcc 15.x. Since msys2 has moved on to gcc 16.x and
+          # other packages (cmake, etc.) now require gcc-libs 16.x ABI, pinning
+          # an old gcc-libs causes cmake.exe to silently fail to load (exit 127).
+          # Let pacman install the full toolchain at the current upstream version.
+          dependencies=(
+            "git"
+            "mingw-w64-ucrt-x86_64-ccache"
+            "mingw-w64-ucrt-x86_64-cmake"
+            "mingw-w64-ucrt-x86_64-lld"
+            "mingw-w64-ucrt-x86_64-ninja"
+            "mingw-w64-ucrt-x86_64-cppwinrt"
+            "mingw-w64-ucrt-x86_64-curl-winssl"
+            "mingw-w64-ucrt-x86_64-graphviz"
+            "mingw-w64-ucrt-x86_64-MinHook"
+            "mingw-w64-ucrt-x86_64-miniupnpc"
+            "mingw-w64-ucrt-x86_64-nlohmann-json"
+            # "mingw-w64-ucrt-x86_64-nodejs"  # Replaced by actions/setup-node (vite 8 requires MSVC Node.js)
+            # "mingw-w64-ucrt-x86_64-nsis"  # Replaced by Inno Setup
+            "mingw-w64-ucrt-x86_64-onevpl"
+            "mingw-w64-ucrt-x86_64-openssl"
+            "mingw-w64-ucrt-x86_64-toolchain"
+            "mingw-w64-ucrt-x86_64-autotools"
+          )
+
+          pacman -Syu --noconfirm "${dependencies[@]}"
+
+          # install pinned opus after Syu to prevent upgrade
+          pacman --noconfirm -U ${opus_tarball}
+
+      - name: Verify Build Tools
+        shell: msys2 {0}
+        run: |
+          echo "Verifying build tools are installed..."
+          which cmake || (echo "cmake not found" && exit 1)
+          which ninja || (echo "ninja not found" && exit 1)
+          which gcc || (echo "gcc not found" && exit 1)
+          
+          echo "All build tools verified successfully"
+          echo "  CMake: $(cmake --version | head -1)"
+          echo "  Ninja: $(ninja --version)"
+          echo "  GCC: $(gcc --version | head -1)"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup .NET for DualSense sidecar
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build self-contained DualSense sidecar
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
+        run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
+
+      - name: Build Web UI
+        shell: pwsh
+        run: |
+          npm ci
+          npm run lint:webui
+          npm run test:webui
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          $env:SUNSHINE_SOURCE_ASSETS_DIR = "${{ github.workspace }}\src_assets"
+          $env:SUNSHINE_ASSETS_DIR = "${{ github.workspace }}\build"
+          npm run build
+
+      - name: Cache compiler objects
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}\.ccache
+          # The key is unique per run; the prefix restore-key is what actually
+          # produces the hits: every run seeds itself from the most recent
+          # previous one. Saving is split out below so that only master
+          # writes: PR-branch entries are invisible to other branches yet
+          # still consume the shared cache quota, and when that quota fills
+          # (10 GB, LRU), eviction wiped the whole lineage once and forced a
+          # full 47-minute cold rebuild.
+          key: ccache-windows-${{ github.run_id }}
+          restore-keys: |
+            ccache-windows-
+
+      - name: Fetch paired GUI artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.gui_run_id != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GUI_RUN_ID: ${{ inputs.gui_run_id }}
+        run: |
+          $arguments = @{ Destination = "$env:RUNNER_TEMP/paired-gui" }
+          if ($env:GUI_RUN_ID) { $arguments.RunId = $env:GUI_RUN_ID }
+          ./scripts/fetch-paired-gui.ps1 @arguments
+          "GUI_BUNDLE_DIR=$env:RUNNER_TEMP/paired-gui" >> $env:GITHUB_ENV
+
+      - name: Configure Windows
+        id: configure_windows
+        shell: msys2 {0}
+        env:
+          # Only trusted events may expose the read-only token to PR-controlled CMake code.
+          GITHUB_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
+          # Same-repository PRs are trusted; fork PRs never receive the private credential.
+          RTX_VIDEO_SDK_URL: ${{ (github.repository == 'AlkaidLab/foundation-sunshine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'AlkaidLab/foundation-sunshine')) && secrets.RTX_VIDEO_SDK_URL || '' }}
+          RTX_VIDEO_SDK_TOKEN: ${{ (github.repository == 'AlkaidLab/foundation-sunshine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'AlkaidLab/foundation-sunshine')) && secrets.DRIVER_DOWNLOAD_TOKEN || '' }}
+          RTX_VIDEO_NGX_APPLICATION_ID: ${{ (github.repository == 'AlkaidLab/foundation-sunshine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'AlkaidLab/foundation-sunshine')) && secrets.RTX_VIDEO_NGX_APPLICATION_ID || '' }}
+          SUNSHINE_RTX_HDR: ${{ !(github.repository == 'AlkaidLab/foundation-sunshine' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'AlkaidLab/foundation-sunshine')) && 'OFF' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/master') && 'ON' || inputs.rtx_hdr || 'AUTO' }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          BUILD_VERSION: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
+          COMMIT: ${{ needs.setup_release.outputs.release_commit }}
+          # ccache.exe is a native binary, so it reads the Windows-style path
+          # straight out of the environment even under the msys2 shell.
+          CCACHE_DIR: ${{ github.workspace }}\.ccache
+          CCACHE_MAXSIZE: 2G
+          # `pacman -Syu` can move the toolchain underneath us between runs.
+          # Hashing the compiler binary instead of its mtime keeps the cache
+          # valid across runs that did not actually change gcc.
+          CCACHE_COMPILERCHECK: content
+          # Fork PRs still try every public dependency. Keep the build usable
+          # when a release asset is temporarily unavailable; official builds
+          # continue to require the complete driver set.
+          DRIVER_DEPS_REQUIRED: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork) && 'OFF' || 'ON' }}
+        run: |
+          mkdir -p build
+          ccache --zero-stats
+          gui_options=()
+          if [[ -n "${GUI_BUNDLE_DIR:-}" ]]; then
+            gui_options=(-DFETCH_GUI=OFF "-DGUI_DIR=$GUI_BUNDLE_DIR")
+          fi
+          cmake \
+            -B build \
+            -G Ninja \
+            -S . \
+            "${gui_options[@]}" \
+            -DBUILD_DOCS=OFF \
+            -DSUNSHINE_RTX_HDR="$SUNSHINE_RTX_HDR" \
+            -DBUILD_TESTS=ON \
+            -DBUILD_TRAY_TESTS=ON \
+            -DBUILD_WEB_UI=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DSUNSHINE_ASSETS_DIR=assets \
+            -DDRIVER_DEPS_REQUIRED=${DRIVER_DEPS_REQUIRED} \
+            -DSUNSHINE_PUBLISHER_NAME='${{ github.repository_owner }}' \
+            -DSUNSHINE_PUBLISHER_WEBSITE='https://github.com/AlkaidLab/foundation-sunshine' \
+            -DSUNSHINE_PUBLISHER_ISSUE_URL='https://github.com/AlkaidLab/foundation-sunshine/issues'
+          if grep -q '^SUNSHINE_RTX_HDR_AVAILABLE:INTERNAL=TRUE' build/CMakeCache.txt; then
+            echo 'rtx_hdr=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'rtx_hdr=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Windows
+        shell: msys2 {0}
+        env:
+          CCACHE_DIR: ${{ github.workspace }}\.ccache
+          CCACHE_MAXSIZE: 2G
+          CCACHE_COMPILERCHECK: content
+        run: |
+          ninja -C build
+          ccache --show-stats
+
+      - name: Run native tests
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Save compiler cache
+        # Only master writes (always(): a failed or cancelled build still
+        # produced valid objects). PR runs restore master's entry, so they
+        # don't need to save, and skipping their saves keeps the shared
+        # cache quota flat.
+        if: always() && github.ref == 'refs/heads/master'
+        id: ccache_save
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ github.workspace }}\.ccache
+          key: ccache-windows-${{ github.run_id }}
+
+      - name: Prune stale compiler cache entries
+        # Collapse the cache to exactly one entry (the newest one saved).
+        # Entries pile up one-per-run otherwise; on a 10 GB repo quota that
+        # once got the entire lineage LRU-evicted. A single entry is also
+        # restored by every later run, which keeps resetting its 7-day
+        # inactivity clock, so neither eviction path can take it out.
+        # Only entries from runs OLDER than this one are deleted (run ids
+        # increase monotonically): a cancelled run still executes its
+        # always() save and prune alongside the next run, and age-filtered
+        # prunes converge to the newest entry under any interleaving —
+        # pruning by "not my key" instead could race down to zero entries.
+        # Skipped unless the save step actually succeeded (outcome keeps the
+        # real result under continue-on-error; the save subaction sets no
+        # outputs, so conclusion can't tell success from failure).
+        if: always() && github.ref == 'refs/heads/master' && steps.ccache_save.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $current = "ccache-windows-${{ github.run_id }}"
+          # Page through the caches API instead of `gh cache list`: the
+          # latter caps at --limit 100, and once this repo's other caches
+          # (msys2, npm, ...) grow past that, stale ccache entries would
+          # fall outside the window and never get pruned.
+          $stale = gh api --paginate "repos/$env:GITHUB_REPOSITORY/actions/caches?per_page=100" --jq '.actions_caches[] | select(.key | test("^ccache-windows-[0-9]+$")) | [(.key | sub("^ccache-windows-";"") | tonumber), .id, .key] | @tsv' |
+            Where-Object { $_ } |
+            ForEach-Object {
+              $parts = $_ -split "`t"
+              if ([long]$parts[0] -lt [long]"${{ github.run_id }}") {
+                [pscustomobject]@{ Id = $parts[1]; Key = $parts[2] }
+              }
+            }
+          foreach ($entry in $stale) {
+            gh cache delete $entry.Id --repo $env:GITHUB_REPOSITORY
+            Write-Output "Pruned $($entry.Key)"
+          }
+          Write-Output "Pruned $(@($stale).Count) stale ccache entries; kept $current"
+
+      - name: Cache Inno Setup
+        id: inno-cache
+        uses: actions/cache@v6
+        with:
+          path: C:\Program Files (x86)\Inno Setup 6
+          key: inno-setup-6
+
+      - name: Install Inno Setup
+        if: steps.inno-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Download and install Inno Setup 6 (silent install)
+          $url = "https://jrsoftware.org/download.php/is.exe"
+          $installer = "$env:TEMP\innosetup.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait
+
+      - name: Add Inno Setup to PATH
+        shell: pwsh
+        run: |
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Package Windows
+        shell: msys2 {0}
+        env:
+          RTX_VIDEO_ADAPTER_BUILT: ${{ steps.configure_windows.outputs.rtx_hdr }}
+          RTX_VIDEO_ADAPTER_REQUIRED: ${{ github.repository == 'AlkaidLab/foundation-sunshine' && github.event_name != 'pull_request' && github.ref == 'refs/heads/master' }}
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          cd build
+
+          if [[ "$RTX_VIDEO_ADAPTER_REQUIRED" == "true" && "$RTX_VIDEO_ADAPTER_BUILT" != "true" ]]; then
+            echo "Protected master build did not produce the required NVIDIA RTX Video adapter"
+            exit 1
+          fi
+
+          # Package the Inno Setup installer and portable ZIP.
+          # Install into the staging directory first.
+          cmake --install . --prefix ./inno_staging
+          test -f ./inno_staging/tools/ds5-sidecar-package.json
+          test ! -e ./inno_staging/tools/sunshine-ds5-sidecar/Sunshine.Ds5Sidecar.exe
+          if [[ "$RTX_VIDEO_ADAPTER_BUILT" == "true" ]]; then
+            test -f ./inno_staging/tools/hdr_enhanced/nvidia_rtx_video/foundation_rtx_video_adapter.dll
+            test ! -e ./inno_staging/msvcp140.dll
+            test ! -e ./inno_staging/vcruntime140.dll
+          fi
+          test ! -e ./inno_staging/tools/hdr_enhanced/nvidia_rtx_video/nvngx_truehdr.dll
+          test ! -e ./inno_staging/tools/hdr_enhanced/nvidia_dlssnr/nvngx_dlssnr.dll
+          DLSSNR_ADAPTER_BUILT=false
+          if [[ -f ./image_enhancement/nvidia_dlssnr_adapter/Release/foundation_dlssnr_adapter.dll ]]; then
+            DLSSNR_ADAPTER_BUILT=true
+            test -f ./inno_staging/tools/hdr_enhanced/nvidia_dlssnr/foundation_dlssnr_adapter.dll
+            test -f ./inno_staging/tools/hdr_enhanced/nvidia_dlssnr/NVIDIA-DLSS-LICENSE.txt
+            test -f ./inno_staging/tools/hdr_enhanced/nvidia_dlssnr/NVIDIA-OPTICAL-FLOW-NOTICES.txt
+          fi
+          test ! -e ./inno_staging/assets/hdr-components.json
+          
+          # Run the Inno Setup compiler and prove that it consumed only the
+          # lightweight package manifest, not the self-contained runtime.
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" sunshine_installer.iss | tee inno-build.log
+          grep -F "ds5-sidecar-package.json" inno-build.log
+          if grep -Ei 'nvngx_(truehdr|dlssnr)\.dll' inno-build.log; then
+            echo "NVIDIA enhancement runtimes must not be compiled into the installer"
+            exit 1
+          fi
+          if [[ "$DLSSNR_ADAPTER_BUILT" == "true" ]]; then
+            grep -F "foundation_dlssnr_adapter.dll" inno-build.log
+            grep -F "NVIDIA-DLSS-LICENSE.txt" inno-build.log
+            grep -F "NVIDIA-OPTICAL-FLOW-NOTICES.txt" inno-build.log
+          fi
+          if [[ "$RTX_VIDEO_ADAPTER_BUILT" == "true" ]]; then
+            grep -F "foundation_rtx_video_adapter.dll" inno-build.log
+          fi
+          
+          # Generate the portable ZIP.
+          cpack -G ZIP --config ./CPackConfig.cmake --verbose
+          cmake -E tar tf ./cpack_artifacts/Sunshine.zip | tr '\\' '/' > portable-files.txt
+          grep -F "Sunshine/tools/ds5-sidecar-package.json" portable-files.txt
+          if [[ "$RTX_VIDEO_ADAPTER_BUILT" == "true" ]]; then
+            grep -F "Sunshine/tools/hdr_enhanced/nvidia_rtx_video/foundation_rtx_video_adapter.dll" portable-files.txt
+          fi
+          if [[ "$DLSSNR_ADAPTER_BUILT" == "true" ]]; then
+            grep -F "Sunshine/tools/hdr_enhanced/nvidia_dlssnr/foundation_dlssnr_adapter.dll" portable-files.txt
+            grep -F "Sunshine/tools/hdr_enhanced/nvidia_dlssnr/NVIDIA-DLSS-LICENSE.txt" portable-files.txt
+            grep -F "Sunshine/tools/hdr_enhanced/nvidia_dlssnr/NVIDIA-OPTICAL-FLOW-NOTICES.txt" portable-files.txt
+          fi
+          if grep -Ei 'nvngx_(truehdr|dlssnr)\.dll|hdr-components\.json' portable-files.txt; then
+            echo "Side-loaded HDR files and mutable trust metadata must not be included in the main portable package"
+            exit 1
+          fi
+          if grep -F "Sunshine/tools/sunshine-ds5-sidecar/Sunshine.Ds5Sidecar.exe" portable-files.txt; then
+            echo "The optional DualSense runtime leaked into the main portable package"
+            exit 1
+          fi
+
+          # move
+          mv ./cpack_artifacts/Sunshine.exe ../artifacts/sunshine-windows-installer.exe
+          mv ./cpack_artifacts/Sunshine.zip ../artifacts/sunshine-windows-portable.zip
+          cp ./ds5-sidecar-package/Sunshine.Ds5Sidecar.x64.zip ../artifacts/
+          cp ./ds5-sidecar-package.json ../artifacts/Sunshine.Ds5Sidecar.manifest.json
+
+      - name: Rename release assets
+        shell: msys2 {0}
+        run: |
+          # Format tag to vYEAR.DATE where DATE is zero-padded to 4 digits
+          TAG="${{ needs.setup_release.outputs.release_tag }}"
+          NEWTAG="$TAG"
+
+          if [[ "$TAG" =~ ^v([0-9]{4})\.([0-9]+) ]]; then
+            YEAR="${BASH_REMATCH[1]}"
+            DATE_PART="${BASH_REMATCH[2]}"
+            DATE_PADDED=$(printf "%04d" "$DATE_PART")
+            NEWTAG="v${YEAR}.${DATE_PADDED}"
+          fi
+
+          # 重命名安装包和便携版
+          INSTALLER_NAME="Sunshine.${NEWTAG}.WindowsInstaller.exe"
+          mv artifacts/sunshine-windows-installer.exe "artifacts/${INSTALLER_NAME}"
+          mv artifacts/sunshine-windows-portable.zip "artifacts/Sunshine.${NEWTAG}.Portable-x64.zip"
+
+          # Legacy Control Panel builds treat any release asset containing
+          # "Windows" as a full installer. Keep that marker exclusive to the
+          # actual installer so existing users can update to the fixed build.
+          for asset in artifacts/*; do
+            name=$(basename "$asset")
+            lower=${name,,}
+            if [[ "$lower" == *windows* && "$lower" != "${INSTALLER_NAME,,}" ]]; then
+              echo "Non-installer release asset would confuse legacy updaters: $name"
+              exit 1
+            fi
+          done
+
+      - name: Generate Checksums
+        shell: pwsh
+        run: |
+          # Generate SHA256 checksums from the final release asset names.
+          .\scripts\generate-checksums.ps1 -Path .\artifacts -Output "SHA256SUMS.txt"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: sunshine-windows-r${{ github.run_number }}
+          path: |
+            artifacts/Sunshine.*.WindowsInstaller.exe
+            artifacts/Sunshine.*.Portable-x64.zip
+            artifacts/Sunshine.Ds5Sidecar.x64.zip
+            artifacts/Sunshine.Ds5Sidecar.manifest.json
+            artifacts/SHA256SUMS.txt
+            artifacts/checksums.json
+          if-no-files-found: error
+
+      - name: Create/Update GitHub Release
+        if: needs.setup_release.outputs.publish_release == 'true'
+        uses: LizardByte/create-release-action@v2025.426.1549
+        with:
+          allowUpdates: true
+          body: ${{ needs.setup_release.outputs.release_body }}
+          generateReleaseNotes: ${{ needs.setup_release.outputs.release_generate_release_notes }}
+          name: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
+          prerelease: true
+          tag: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
+          token: ${{ secrets.GH_BOT_TOKEN }}

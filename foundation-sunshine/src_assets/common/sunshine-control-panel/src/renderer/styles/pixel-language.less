@@ -1,0 +1,133 @@
+// ============================================
+// 设备中心像素设计语言 — 令牌与通用部件
+// 词汇表：
+//   大按钮   = 方角 + 2px 边 + 硬投影按压手感（主操作，默认尺寸）
+//   小按钮   = [ 方括号 ] 文本操作（块内低权重动作）
+// 仅 DualSenseSettings.less 与 ControllersHub.less 应导入本文件；
+// 不要上移到全局 mixins.less。
+// 方角控件与 reduced-motion 的套用规则在 ControllersHub.less：
+// ds5-page 仅嵌于 .chub-page 内渲染，随级联获得同样规则。
+// ============================================
+
+@pixel-primary-light: #4a9eff;
+@pixel-primary-deep-light: #3b7fcc;
+@pixel-window-fill-light: rgba(255, 255, 255, .93);
+@pixel-window-shadow-light: rgba(74, 158, 255, .22);
+@pixel-primary-dark: #d4a5a5;
+@pixel-primary-deep-dark: #a98383;
+@pixel-window-line-dark: #8b6f5e;
+@pixel-window-fill-dark: rgba(45, 38, 40, .96);
+@pixel-window-shadow-dark: rgba(0, 0, 0, .45);
+
+@pixel-section-gap: 28px;
+@pixel-floating-window-gap: 36px;
+@pixel-detail-gap: 16px;
+@pixel-detail-divider: 1px dashed var(--pixel-detail-divider-color);
+
+.pixel-page-base() {
+  margin: 0 auto;
+  padding: 34px 30px 60px;
+  color: var(--el-text-color-primary);
+  font-family: 'Microsoft YaHei UI', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.pixel-window(@line, @fill, @shadow) {
+  position: relative;
+  padding: 24px 22px 20px;
+  border: 2px solid @line;
+  background: @fill;
+  box-shadow: 0 6px 0 @shadow;
+}
+
+.pixel-window-tab(@line, @fill, @primary, @shadow) {
+  position: absolute;
+  top: -13px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 12px;
+  border: 2px solid @line;
+  border-bottom-color: @fill;
+  background: @fill;
+  color: @primary;
+  font-family: var(--pix-font);
+  font-size: 13px;
+  letter-spacing: .12em;
+  box-shadow: 0 -3px 0 @shadow;
+}
+
+.pixel-section-head(@gap) {
+  display: flex;
+  align-items: center;
+  gap: @gap;
+  margin-bottom: 14px;
+}
+
+.pixel-section-label(@primary, @size) {
+  color: @primary;
+  font-family: var(--pix-font);
+  font-size: @size;
+  letter-spacing: .12em;
+  white-space: nowrap;
+}
+
+// 区块边框和标题线使用实线；同一面板内的状态与明细使用虚线。
+.pixel-divider-color(@line) {
+  --pixel-divider-color: color-mix(in srgb, @line 35%, transparent);
+  --pixel-detail-divider-color: color-mix(in srgb, @line 50%, transparent);
+}
+
+// —— 大按钮 ——
+.pixel-block-button(@shadow-color) {
+  border-radius: 0 !important;
+  border-width: 2px;
+  font-weight: 700;
+  box-shadow: 0 4px 0 @shadow-color;
+  transition: transform .1s ease, box-shadow .1s ease, background-color .12s ease, border-color .12s ease, color .12s ease;
+
+  &.el-button--primary:not(.is-disabled) {
+    border: 2px solid @shadow-color !important;
+  }
+  &:not(.is-disabled):hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 0 @shadow-color;
+  }
+  &:not(.is-disabled):active {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 @shadow-color;
+  }
+  &.is-disabled {
+    transform: none;
+    box-shadow: 0 4px 0 var(--el-border-color-lighter);
+  }
+}
+
+// —— 小按钮 ——
+.pixel-bracket-button(@primary-color) {
+  min-height: 30px;
+  margin: 0;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  font-family: var(--pix-font);
+  font-weight: 400;
+  box-shadow: none;
+  transition: color .12s ease;
+
+  &::before { content: '['; opacity: .7; margin-right: 4px; }
+  &::after { content: ']'; opacity: .7; margin-left: 4px; }
+  &.el-button--primary:not(.is-disabled) { color: @primary-color; }
+  &.el-button--warning:not(.is-disabled) { color: var(--el-color-warning-dark-2, var(--el-color-warning)); }
+  &.el-button--danger:not(.is-disabled) { color: var(--el-color-danger); }
+  &:not(.el-button--primary):not(.el-button--warning):not(.el-button--danger):not(.is-disabled) { color: var(--el-text-color-secondary); }
+  &:hover, &:focus-visible { background: transparent; }
+  &:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+  &.is-disabled {
+    background: transparent;
+    color: var(--el-text-color-secondary) !important;
+    opacity: .8;
+  }
+}

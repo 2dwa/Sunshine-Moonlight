@@ -1,0 +1,42 @@
+/**
+ * @file src/httpcommon.h
+ * @brief Declarations for common HTTP.
+ */
+#pragma once
+
+// lib includes
+#include <curl/curl.h>
+#include <map>
+#include <string>
+
+// local includes
+#include "network.h"
+#include "thread_safe.h"
+
+namespace http {
+
+  int
+  init();
+  int
+  create_creds(const std::string &pkey, const std::string &cert);
+  int
+  save_user_creds(
+    const std::string &file,
+    const std::string &username,
+    const std::string &password,
+    bool run_our_mouth = false);
+
+  int reload_user_creds(const std::string &file);
+  bool download_file(const std::string &url, const std::string &file, long ssl_version = CURL_SSLVERSION_TLSv1_2);
+  bool fetch_url(const std::string &url, std::string &content, long ssl_version = CURL_SSLVERSION_TLSv1_2);
+  bool get_json(const std::string &url, const std::map<std::string, std::string> &headers, std::string &response_body, long &http_code, long timeout_seconds = 30);
+  bool post_json(const std::string &url, const std::string &body, const std::map<std::string, std::string> &headers, std::string &response_body, long &http_code, long timeout_seconds = 120);
+  bool download_image_with_magic_check(const std::string &url, const std::string &file, long ssl_version = CURL_SSLVERSION_TLSv1_2);
+  bool download_public_cover_image(const std::string &url, const std::string &file, long ssl_version = CURL_SSLVERSION_TLSv1_2);
+  std::string url_escape(const std::string &url);
+  std::string url_get_host(const std::string &url);
+
+  extern std::string unique_id;
+  extern net::net_e origin_web_ui_allowed;
+
+}  // namespace http

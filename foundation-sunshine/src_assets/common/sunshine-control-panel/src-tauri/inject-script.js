@@ -1,0 +1,291 @@
+// Sunshine Web UI 注入脚本
+// 用于主题同步、导航检测和拖放功能
+
+;(function () {
+  window.isTauri = true
+  window.electron ??= {}
+
+  const parentOrigins = new Set([
+    'http://tauri.localhost',
+    'https://tauri.localhost',
+    'tauri://localhost',
+    'http://localhost:8080',
+    'https://localhost:8080',
+    'http://127.0.0.1:8080',
+    'https://127.0.0.1:8080',
+  ])
+  const parentOrigin = [document.referrer, location.ancestorOrigins?.[0]]
+    .map((value) => {
+      try {
+        const url = new URL(value)
+        return url.origin === 'null' ? `${url.protocol}//${url.host}` : url.origin
+      } catch {
+        return ''
+      }
+    })
+    .find((origin) => parentOrigins.has(origin))
+  const adaptedTabs = new Map()
+
+  // Keep these integration details in the native proxy, not in browser-served WebUI source.
+  const adaptEmbeddedControls = () => {
+    if (document.documentElement.dataset.sunshineNavigation !== 'unified') return
+    document.querySelectorAll('.config-tabs .nav-link').forEach((tab) => {
+      if (adaptedTabs.has(tab)) return
+      adaptedTabs.set(tab, tab.scrollIntoView)
+      tab.scrollIntoView = ({ behavior = 'auto' } = {}) => {
+        const list = tab.closest('.config-tabs')
+        if (!list || list.scrollWidth <= list.clientWidth) return
+        const tabRect = tab.getBoundingClientRect()
+        const listRect = list.getBoundingClientRect()
+        const left = list.scrollLeft + tabRect.left - listRect.left - (list.clientWidth - tabRect.width) / 2
+        list.scrollTo({ left: Math.max(0, left), behavior })
+      }
+    })
+
+    if (!/^\/password(?:\.html)?$/.test(location.pathname) || location.hash !== '#logout') return
+    const logoutButton = document.querySelector('.account-menu .dropdown-item.text-danger')
+    if (!logoutButton) return
+    history.replaceState(history.state, '', location.pathname + location.search)
+    // Open the existing WebUI confirmation; never submit logout automatically.
+    logoutButton.click()
+  }
+
+  const handleNavigationContext = (event) => {
+    if (
+      window.parent === window ||
+      !parentOrigin ||
+      event.source !== window.parent ||
+      event.origin !== parentOrigin ||
+      event.data?.source !== 'sunshine-control-panel'
+    ) {
+      return
+    }
+    if (event.data.unified === true) {
+      document.documentElement.dataset.sunshineNavigation = 'unified'
+      adaptEmbeddedControls()
+    } else {
+      delete document.documentElement.dataset.sunshineNavigation
+      adaptedTabs.forEach((original, tab) => {
+        tab.scrollIntoView = original
+      })
+      adaptedTabs.clear()
+    }
+  }
+
+  // 消息处理器映射
+  const messageHandlers = {
+    'theme-sync': ({ theme }) => {
+      document.documentElement.setAttribute('data-bs-theme', theme)
+      localStorage.setItem('theme', theme)
+    },
+    'set-background': ({ dataUrl, filePath }) => {
+      document.body.style.backgroundImage = `url("${dataUrl}")`
+      filePath && localStorage.setItem('WEBUI-BGSRC-PATH', filePath)
+    },
+  }
+
+  // 消息监听器
+  window.addEventListener('message', (event) => {
+    const { data } = event
+    if (data?.type === 'native-navigation-context') {
+      handleNavigationContext(event)
+      return
+    }
+    data?.type && messageHandlers[data.type]?.(data)
+  })
+
+  // 发送消息到父窗口
+  const postToParent = (type, payload = {}) => {
+    window.parent.postMessage({ type, ...payload }, '*')
+  }
+
+  // Tauri API 辅助函数
+  const invoke = (cmd, args) => window.__TAURI__?.core?.invoke?.(cmd, args)
+  const openDialog = (options) => window.__TAURI__?.dialog?.open?.(options)
+
+  // Electron 兼容 API（使用 Tauri API）
+  window.electron.webUtils = {
+    async getPathForFile(file) {
+      if (!file) return ''
+      if (file.path) return file.path
+
+      try {
+        const selected = await openDialog({
+          title: '选择文件',
+          filters: [{ name: '所有文件', extensions: ['*'] }],
+          multiple: false,
+          directory: false,
+        })
+        return selected || file.name
+      } catch {
+        return file.name
+      }
+    },
+  }
+
+  // ICC 文件列表 API
+  const getIccFileList = async (callback) => {
+    try {
+      const result = await invoke('get_icc_file_list')
+      if (result) {
+        callback?.(result)
+        return result
+      }
+    } catch {
+      // 忽略错误
+    }
+    callback?.([])
+    return []
+  }
+  window.getIccFileList = window.electron.getIccFileList = getIccFileList
+
+  // 读取目录 API
+  const emptyDir = { files: [], dirs: [] }
+  window.readDirectory = async (path, callback) => {
+    try {
+      const result = await invoke('read_directory', { path })
+      if (result) {
+        callback?.(result)
+        return result
+      }
+    } catch {
+      // 忽略错误
+    }
+    callback?.(emptyDir)
+    return emptyDir
+  }
+
+  // 虚拟鼠标驱动管理 API
+  window.vmouseDriver = {
+    async getStatus() {
+      try {
+        return await invoke('get_vmouse_status')
+      } catch (e) {
+        return { installed: false, running: false, status_text: '检测失败', driver_path: '', config_enabled: false }
+      }
+    },
+    async install() {
+      return await invoke('install_vmouse_driver')
+    },
+    async uninstall() {
+      return await invoke('uninstall_vmouse_driver')
+    },
+  }
+
+  // ViGEmBus 虚拟手柄驱动管理 API
+  window.vigemDriver = {
+    async getStatus() {
+      try {
+        return await invoke('get_vigem_status')
+      } catch (e) {
+        return {
+          installed: false,
+          running: false,
+          version: '',
+          version_ok: false,
+          status_text: '检测失败',
+          driver_path: '',
+        }
+      }
+    },
+    async install(force = false) {
+      return await invoke('install_vigem_driver', { force: !!force })
+    },
+    async uninstall() {
+      return await invoke('uninstall_vigem_driver')
+    },
+  }
+
+  // ZakoVDD virtual-display driver management API
+  window.vddDriver = {
+    async getStatus() {
+      try {
+        return await invoke('get_vdd_status')
+      } catch (e) {
+        return {
+          state: 'unknown',
+          installed: false,
+          running: false,
+          control_available: false,
+          installed_version: '',
+          bundled_version: '',
+          version_match: false,
+          monitor_active: false,
+          status_text: String(e || 'VDD status check failed'),
+        }
+      }
+    },
+    async install() {
+      return await invoke('install_vdd_driver')
+    },
+    async uninstall() {
+      return await invoke('uninstall_vdd_driver')
+    },
+  }
+
+  // 环境检测
+  const isProduction = () => window.TAURI_PRODUCTION === true && window.isTauri === true
+
+  // 禁用右键菜单和开发者工具快捷键（仅在生产环境）
+  const disableContextMenu = () => {
+    if (!isProduction()) return
+
+    const preventDefault = (e) => (e.preventDefault(), false)
+
+    document.addEventListener('contextmenu', preventDefault, true)
+    document.addEventListener(
+      'keydown',
+      (e) => {
+        const { keyCode, ctrlKey, shiftKey } = e
+        // F12 | Ctrl+Shift+I/J | Ctrl+U
+        if (
+          keyCode === 123 ||
+          (ctrlKey && shiftKey && (keyCode === 73 || keyCode === 74)) ||
+          (ctrlKey && !shiftKey && keyCode === 85)
+        ) {
+          return preventDefault(e)
+        }
+      },
+      true
+    )
+  }
+
+  // 导航检测
+  const initNavigation = () => {
+    const getFullPath = () => location.pathname + location.search + location.hash
+    let lastPath = location.pathname + location.search
+
+    postToParent('path-update', { path: getFullPath() })
+
+    window.navigation?.addEventListener('navigate', (e) => {
+      if (!e.canIntercept || e.hashChange || e.downloadRequest) return
+
+      const { pathname, search, hash } = new URL(e.destination.url)
+      const newPath = pathname + search
+
+      if (newPath !== lastPath) {
+        postToParent('navigation-start', { path: newPath + hash })
+        lastPath = newPath
+        setTimeout(disableContextMenu, 200)
+      }
+    })
+  }
+
+  // 初始化
+  const init = () => {
+    disableContextMenu()
+    initNavigation()
+    postToParent('request-theme')
+    if (window.parent !== window && parentOrigin) {
+      window.parent.postMessage(
+        { type: 'native-navigation-context-request', source: 'sunshine-webui' },
+        parentOrigin
+      )
+      const observer = new MutationObserver(adaptEmbeddedControls)
+      observer.observe(document.body, { childList: true, subtree: true })
+      window.addEventListener('hashchange', adaptEmbeddedControls)
+    }
+  }
+
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init()
+})()

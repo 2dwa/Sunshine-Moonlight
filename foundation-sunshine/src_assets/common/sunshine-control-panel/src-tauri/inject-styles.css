@@ -1,0 +1,48 @@
+/* 完全隐藏滚动条 */
+/* The GUI owns the iframe loading transition. */
+@view-transition {
+  navigation: none;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: none;
+}
+
+/* IE/Edge */
+body {
+  -ms-overflow-style: none;
+}
+body {
+  padding-top: 72px;
+}
+.navbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  margin-bottom: 72px;
+}
+.navbar-brand {
+  margin-left: -48px;
+  visibility: hidden;
+}
+#bd-theme {
+  display: none;
+}
+
+/* Only the native panel proxy injects this stylesheet. Page headers stay untouched. */
+html[data-sunshine-navigation='unified'] .navbar {
+  display: none !important;
+}
+html[data-sunshine-navigation='unified'] body {
+  /* Reserve the native caption's hit area without retaining the WebUI navbar gap. */
+  padding-top: 32px !important;
+}

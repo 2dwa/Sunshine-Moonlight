@@ -1,0 +1,176 @@
+/**
+ * @file src/audio.h
+ * @brief Declarations for audio capture and encoding.
+ */
+#pragma once
+
+// local includes
+#include "platform/common.h"
+#include "thread_safe.h"
+#include "utility.h"
+
+#include <bitset>
+
+namespace audio {
+  // Audio codec values negotiated via the "x-ml-audio.codec" RTSP attribute.
+  // Defaults to OPUS for backward compatibility with all existing Moonlight
+  // clients.
+  enum codec_e : int {
+    CODEC_OPUS = 0,
+    CODEC_AC3 = 1,
+    CODEC_EAC3 = 2,
+    CODEC_PCM_S16 = 3,  ///< Raw signed 16-bit interleaved LPCM (no compression)
+  };
+
+  enum stream_config_e : int {
+    STEREO,  ///< Stereo
+    HIGH_STEREO,  ///< High stereo
+    SURROUND51,  ///< Surround 5.1
+    HIGH_SURROUND51,  ///< High surround 5.1
+    SURROUND71,  ///< Surround 7.1
+    HIGH_SURROUND71,  ///< High surround 7.1
+    SURROUND714,  ///< Surround 7.1.4
+    HIGH_SURROUND714,  ///< High surround 7.1.4
+    MAX_STREAM_CONFIG  ///< Maximum audio stream configuration
+  };
+
+  struct opus_stream_config_t {
+    std::int32_t sampleRate;
+    int channelCount;
+    int streams;
+    int coupledStreams;
+    const std::uint8_t *mapping;
+    int bitrate;
+  };
+
+  struct stream_params_t {
+    int channelCount;
+    int streams;
+    int coupledStreams;
+    std::uint8_t mapping[platf::speaker::MAX_SPEAKERS];
+  };
+
+  extern opus_stream_config_t stream_configs[MAX_STREAM_CONFIG];
+
+  struct config_t {
+    enum flags_e : int {
+      HIGH_QUALITY,  ///< High quality audio
+      HOST_AUDIO,  ///< Host audio
+      CUSTOM_SURROUND_PARAMS,  ///< Custom surround parameters
+      CONTINUOUS_AUDIO,  ///< Continuous audio
+      MAX_FLAGS  ///< Maximum number of flags
+    };
+
+    int packetDuration;
+    int channels;
+    int mask;
+
+    // Audio codec selected for this session (codec_e). Defaults to CODEC_OPUS.
+    // AC3/E-AC3 are intended for HDMI/SPDIF passthrough on the client side and
+    // require the client to advertise support via the "x-ml-audio.codec" RTSP
+    // attribute. When set to a non-OPUS value the encoder emits raw IEC 61937
+    // bytes inside the audio RTP payload instead of Opus packets.
+    int codec;
+
+    // Bitrate (bps) requested by the client for AC3/E-AC3 encoding. 0 means
+    // "use server default" (640 kbps for AC3, 384 kbps for E-AC3).
+    int bitrate;
+
+    stream_params_t customStreamParams;
+
+    std::bitset<MAX_FLAGS> flags;
+  };
+
+  struct audio_ctx_t {
+    // We want to change the sink for the first stream only
+    std::unique_ptr<std::atomic_bool> sink_flag;
+
+    std::unique_ptr<platf::audio_control_t> control;
+
+    bool restore_sink;
+    platf::sink_t sink;
+  };
+
+  using buffer_t = util::buffer_t<std::uint8_t>;
+  using packet_t = std::pair<void *, buffer_t>;
+  using audio_ctx_ref_t = safe::shared_t<audio_ctx_t>::ptr_t;
+
+  void
+  capture(safe::mail_t mail, config_t config, void *channel_data);
+
+  /**
+   * @brief Get the reference to the audio context.
+   * @returns A shared pointer reference to audio context.
+   * @note Aside from the configuration purposes, it can be used to extend the
+   *       audio sink lifetime to capture sink earlier and restore it later.
+   *
+   * @examples
+   * audio_ctx_ref_t audio = get_audio_ctx_ref()
+   * @examples_end
+   */
+  audio_ctx_ref_t
+  get_audio_ctx_ref();
+
+  /**
+   * @brief Check if there are any active references to the audio context without creating a new one.
+   * @returns True if there are active references, false otherwise.
+   * @note This function does not trigger the audio context construction, unlike get_audio_ctx_ref().
+   */
+  bool
+  has_audio_ctx_ref();
+
+  /**
+   * @brief Atomically acquire an audio context reference only if one already exists.
+   * @returns A live audio_ctx_ref_t when a context is already alive, an empty one otherwise.
+   * @note Unlike get_audio_ctx_ref() this never (re-)constructs the audio context, which
+   *       makes it safe for fire-and-forget probes such as microphone redirection that
+   *       must not resurrect a context after the audio capture loop has stopped.
+   *       Prefer this over the has_audio_ctx_ref() + get_audio_ctx_ref() pair to avoid
+   *       a TOCTOU race that could otherwise re-trigger start_audio_control().
+   */
+  audio_ctx_ref_t
+  try_get_audio_ctx_ref();
+
+  /**
+   * @brief Check if the audio sink held by audio context is available.
+   * @returns True if available (and can probably be restored), false otherwise.
+   * @note Useful for delaying the release of audio context shared pointer (which
+   *       tries to restore original sink).
+   *
+   * @examples
+   * audio_ctx_ref_t audio = get_audio_ctx_ref()
+   * if (audio.get()) {
+   *     return is_audio_ctx_sink_available(*audio.get());
+   * }
+   * return false;
+   * @examples_end
+   */
+  bool
+  is_audio_ctx_sink_available(const audio_ctx_t &ctx);
+
+  /**
+   * @brief Start the microphone redirect device.
+   * @note Must be called serially by micRecvThread with the other microphone redirect device APIs.
+   * @returns 0 on success, -1 on error.
+   */
+  int
+  init_mic_redirect_device();
+
+  /**
+   * @brief Release the microphone redirect device.
+   * @note Must be called serially by micRecvThread with the other microphone redirect device APIs.
+   */
+  void
+  release_mic_redirect_device();
+
+  /**
+   * @brief Write mixed mono 48 kHz signed 16-bit PCM to the virtual microphone device.
+   * @note Must be called serially by micRecvThread with the other microphone redirect device APIs.
+   * @param samples Pointer to the PCM samples.
+   * @param frame_count Number of mono frames to write.
+   * @returns Number of bytes written, 0 when the current frame was dropped due to backpressure,
+   *          -1 on a generic error, or -2 when the active output backend became unavailable.
+   */
+  int
+  write_mic_pcm(const std::int16_t *samples, std::size_t frame_count);
+}  // namespace audio

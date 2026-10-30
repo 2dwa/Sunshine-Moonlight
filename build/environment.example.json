@@ -1,0 +1,19 @@
+{
+  "qtVersion": "6.8.2",
+  "qtRoot": "../.local/toolchain/Qt/6.8.2/msvc2022_64",
+  "msvcRoot": "../.local/toolchain/msvc",
+  "msvcVersion": "14.42.34433",
+  "windowsSdkVersion": "10.0.22621.0",
+  "msysRoot": "../.local/toolchain/msys64",
+  "moonlightSource": "../moonlight-qt",
+  "sunshineSource": "../foundation-sunshine",
+  "sunshineBase": "../.local/runtime/Sunshine",
+  "moonlightBuild": "../out/moonlight",
+  "sunshineBuild": "../out/sunshine",
+  "nodeRoot": "../.local/toolchain/node-v22.15.0-win-x64",
+  "rustupRoot": "../.local/toolchain/rustup",
+  "cargoRoot": "../.local/toolchain/cargo",
+  "guiBuild": "../out/control-panel",
+  "controlPanelSource": "../foundation-sunshine/src_assets/common/sunshine-control-panel",
+  "moonlightRuntime": "../.local/runtime/Moonlight"
+}

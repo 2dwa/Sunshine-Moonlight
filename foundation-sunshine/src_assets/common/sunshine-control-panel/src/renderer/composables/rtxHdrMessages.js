@@ -1,0 +1,50 @@
+import { enhancementMessages } from './enhancementMessages.js'
+
+export const rtxHdrMessages = {
+  en: {
+    ...enhancementMessages.en,
+    "acquisitionDescription": "Get and extract the NVIDIA RTX Video SDK, then choose bin\\Windows\\x64\\rel\\nvngx_truehdr.dll on this page.",
+    "adapterMissingNotice": "The Sunshine HDR adapter is missing. Reinstall or update Sunshine, then refresh the component status.",
+    "bridge": "Sunshine HDR adapter",
+    "bridgeMissingNotice": "This Sunshine installation does not include HDR enhancement support. Reinstall or update Sunshine, then try again.",
+    "componentTitle": "NVIDIA RTX HDR",
+    "enable": "Enable RTX HDR",
+    "enableHint": "Changes take effect the next time you connect a stream.",
+    "installConfirm": "Install the selected nvngx_truehdr.dll? Administrator permission may be required.",
+    "installFailed": "Unable to install the NVIDIA RTX HDR component.",
+    "installSuccess": "The component is installed. You can now enable RTX HDR.",
+    "installTitle": "Install NVIDIA RTX HDR component",
+    "intro": "Install the required NVIDIA component, then enable RTX HDR for supported streams.",
+    "repairTitle": "Replace NVIDIA RTX HDR component",
+    "runtime": "NVIDIA RTX HDR component",
+    "runtimeMissingNotice": "The NVIDIA RTX HDR component is missing. Choose nvngx_truehdr.dll from the NVIDIA RTX Video SDK to install it.",
+    "selectRuntime": "Choose nvngx_truehdr.dll",
+    "title": "NVIDIA RTX HDR",
+    "uninstallConfirm": "Disable RTX HDR and remove the installed NVIDIA component? Your original file will not be changed.",
+    "uninstallSuccess": "The component was removed and RTX HDR was disabled.",
+    "uninstallTitle": "Remove NVIDIA RTX HDR component"
+  },
+  zh: {
+    ...enhancementMessages.zh,
+    "acquisitionDescription": "获取 RTX_Video_SDK_v1.1.0.zip 并解压，然后在本页点击【选择组件】，选择 bin\\Windows\\x64\\rel\\nvngx_truehdr.dll。",
+    "adapterMissingNotice": "缺少 Sunshine HDR 适配组件。请重新安装或更新 Sunshine，然后刷新组件状态。",
+    "bridge": "Sunshine HDR 适配组件",
+    "bridgeMissingNotice": "当前 Sunshine 安装中缺少 HDR 增强支持。请重新安装或更新 Sunshine 后再试。",
+    "componentTitle": "NVIDIA RTX HDR",
+    "enable": "启用 RTX HDR",
+    "enableHint": "设置将在下次连接串流时生效。",
+    "installConfirm": "是否安装所选的 nvngx_truehdr.dll？过程中可能需要管理员权限。",
+    "installFailed": "NVIDIA RTX HDR 组件安装失败。",
+    "installSuccess": "组件已安装，现在可以启用 RTX HDR。",
+    "installTitle": "安装 NVIDIA RTX HDR 组件",
+    "intro": "安装所需的 NVIDIA 组件后，即可为支持的串流启用 RTX HDR。",
+    "repairTitle": "替换 NVIDIA RTX HDR 组件",
+    "runtime": "NVIDIA RTX HDR 组件",
+    "runtimeMissingNotice": "缺少 NVIDIA RTX HDR 组件。请从 NVIDIA RTX Video SDK 中选择 nvngx_truehdr.dll 进行安装。",
+    "selectRuntime": "选择 nvngx_truehdr.dll",
+    "title": "NVIDIA RTX HDR",
+    "uninstallConfirm": "是否关闭 RTX HDR 并删除已安装的 NVIDIA 组件？你原来的文件不会被修改。",
+    "uninstallSuccess": "组件已删除，RTX HDR 已关闭。",
+    "uninstallTitle": "删除 NVIDIA RTX HDR 组件"
+  }
+}

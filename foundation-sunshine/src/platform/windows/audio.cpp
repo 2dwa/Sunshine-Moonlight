@@ -1,0 +1,1790 @@
+/**
+ * @file src/platform/windows/audio.cpp
+ * @brief Definitions for Windows audio capture.
+ */
+#define INITGUID
+
+// platform includes
+#include <audioclient.h>
+#include <avrt.h>
+#include <chrono>
+#include <mmdeviceapi.h>
+#include <mutex>
+#include <newdev.h>
+#include <roapi.h>
+#include <synchapi.h>
+
+// local includes
+#include "mic_write.h"
+#include "virtual_device_host/microphone_client.h"
+#include "misc.h"
+#include "src/config.h"
+#include "src/globals.h"
+#include "src/logging.h"
+#include "src/platform/common.h"
+#include "src/tray/system_tray.h"
+#include "src/tray/tray_state.h"
+
+// Must be the last included file
+// clang-format off
+#include "PolicyConfig.h"
+// clang-format on
+
+DEFINE_PROPERTYKEY(PKEY_Device_DeviceDesc, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 2);  // DEVPROP_TYPE_STRING
+DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd, 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0, 14);  // DEVPROP_TYPE_STRING
+DEFINE_PROPERTYKEY(PKEY_DeviceInterface_FriendlyName, 0x026e516e, 0xb814, 0x414b, 0x83, 0xcd, 0x85, 0x6d, 0x6f, 0xef, 0x48, 0x22, 2);
+
+#if defined(__x86_64) || defined(__x86_64__) || defined(__amd64) || defined(__amd64__) || defined(_M_AMD64)
+  #define STEAM_DRIVER_SUBDIR L"x64"
+#else
+  #warning No known Steam audio driver for this architecture
+#endif
+
+namespace {
+
+  constexpr auto SAMPLE_RATE = 48000;
+  constexpr auto STEAM_AUDIO_DRIVER_PATH = L"%CommonProgramFiles(x86)%\\Steam\\drivers\\Windows10\\" STEAM_DRIVER_SUBDIR L"\\SteamStreamingSpeakers.inf";
+
+  constexpr auto waveformat_mask_stereo = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+  constexpr auto waveformat_mask_surround51_with_backspeakers = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
+                                                                SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                                                                SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+
+  constexpr auto waveformat_mask_surround51_with_sidespeakers = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
+                                                                SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                                                                SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+
+  constexpr auto waveformat_mask_surround71 = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
+                                              SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                                              SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
+                                              SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+
+  constexpr auto waveformat_mask_surround714 = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT |
+                                               SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
+                                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT |
+                                               SPEAKER_TOP_FRONT_LEFT | SPEAKER_TOP_FRONT_RIGHT |
+                                               SPEAKER_TOP_BACK_LEFT | SPEAKER_TOP_BACK_RIGHT;
+
+  enum class sample_format_e {
+    f32,
+    s32,
+    s24in32,
+    s24,
+    s16,
+    _size,
+  };
+
+  constexpr WAVEFORMATEXTENSIBLE
+  create_waveformat(sample_format_e sample_format, WORD channel_count, DWORD channel_mask) {
+    WAVEFORMATEXTENSIBLE waveformat = {};
+
+    switch (sample_format) {
+      default:
+      case sample_format_e::f32:
+        waveformat.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+        waveformat.Format.wBitsPerSample = 32;
+        waveformat.Samples.wValidBitsPerSample = 32;
+        break;
+
+      case sample_format_e::s32:
+        waveformat.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+        waveformat.Format.wBitsPerSample = 32;
+        waveformat.Samples.wValidBitsPerSample = 32;
+        break;
+
+      case sample_format_e::s24in32:
+        waveformat.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+        waveformat.Format.wBitsPerSample = 32;
+        waveformat.Samples.wValidBitsPerSample = 24;
+        break;
+
+      case sample_format_e::s24:
+        waveformat.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+        waveformat.Format.wBitsPerSample = 24;
+        waveformat.Samples.wValidBitsPerSample = 24;
+        break;
+
+      case sample_format_e::s16:
+        waveformat.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+        waveformat.Format.wBitsPerSample = 16;
+        waveformat.Samples.wValidBitsPerSample = 16;
+        break;
+    }
+
+    static_assert((int) sample_format_e::_size == 5, "Unrecognized sample_format_e");
+
+    waveformat.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    waveformat.Format.nChannels = channel_count;
+    waveformat.Format.nSamplesPerSec = SAMPLE_RATE;
+
+    waveformat.Format.nBlockAlign = waveformat.Format.nChannels * waveformat.Format.wBitsPerSample / 8;
+    waveformat.Format.nAvgBytesPerSec = waveformat.Format.nSamplesPerSec * waveformat.Format.nBlockAlign;
+    waveformat.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+
+    waveformat.dwChannelMask = channel_mask;
+
+    return waveformat;
+  }
+
+  using virtual_sink_waveformats_t = std::vector<WAVEFORMATEXTENSIBLE>;
+
+  /**
+   * @brief List of supported waveformats for an N-channel virtual audio device
+   * @tparam channel_count Number of virtual audio channels
+   * @returns std::vector<WAVEFORMATEXTENSIBLE>
+   * @note The list of virtual formats returned are sorted in preference order and the first valid
+   *       format will be used. All bits-per-sample options are listed because we try to match
+   *       this to the default audio device. See also: set_format() below.
+   */
+  template <WORD channel_count>
+  virtual_sink_waveformats_t
+  create_virtual_sink_waveformats() {
+    if constexpr (channel_count == 2) {
+      auto channel_mask = waveformat_mask_stereo;
+      // The 32-bit formats are a lower priority for stereo because using one will disable Dolby/DTS
+      // spatial audio mode if the user enabled it on the Steam speaker.
+      return {
+        create_waveformat(sample_format_e::s24in32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s24, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s16, channel_count, channel_mask),
+        create_waveformat(sample_format_e::f32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s32, channel_count, channel_mask),
+      };
+    }
+    else if (channel_count == 6) {
+      auto channel_mask1 = waveformat_mask_surround51_with_backspeakers;
+      auto channel_mask2 = waveformat_mask_surround51_with_sidespeakers;
+      return {
+        create_waveformat(sample_format_e::f32, channel_count, channel_mask1),
+        create_waveformat(sample_format_e::f32, channel_count, channel_mask2),
+        create_waveformat(sample_format_e::s32, channel_count, channel_mask1),
+        create_waveformat(sample_format_e::s32, channel_count, channel_mask2),
+        create_waveformat(sample_format_e::s24in32, channel_count, channel_mask1),
+        create_waveformat(sample_format_e::s24in32, channel_count, channel_mask2),
+        create_waveformat(sample_format_e::s24, channel_count, channel_mask1),
+        create_waveformat(sample_format_e::s24, channel_count, channel_mask2),
+        create_waveformat(sample_format_e::s16, channel_count, channel_mask1),
+        create_waveformat(sample_format_e::s16, channel_count, channel_mask2),
+      };
+    }
+    else if (channel_count == 8) {
+      auto channel_mask = waveformat_mask_surround71;
+      return {
+        create_waveformat(sample_format_e::f32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s24in32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s24, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s16, channel_count, channel_mask),
+      };
+    }
+    else if (channel_count == 12) {
+      auto channel_mask = waveformat_mask_surround714;
+      return {
+        create_waveformat(sample_format_e::f32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s24in32, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s24, channel_count, channel_mask),
+        create_waveformat(sample_format_e::s16, channel_count, channel_mask),
+      };
+    }
+  }
+
+  std::string
+  waveformat_to_pretty_string(const WAVEFORMATEXTENSIBLE &waveformat) {
+    std::string result = waveformat.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ? "F" :
+                         waveformat.SubFormat == KSDATAFORMAT_SUBTYPE_PCM        ? "S" :
+                                                                                   "UNKNOWN";
+
+    result += std::to_string(waveformat.Samples.wValidBitsPerSample) + " " +
+              std::to_string(waveformat.Format.nSamplesPerSec) + " ";
+
+    switch (waveformat.dwChannelMask) {
+      case (waveformat_mask_stereo):
+        result += "2.0";
+        break;
+
+      case (waveformat_mask_surround51_with_backspeakers):
+        result += "5.1";
+        break;
+
+      case (waveformat_mask_surround51_with_sidespeakers):
+        result += "5.1 (sidespeakers)";
+        break;
+
+      case (waveformat_mask_surround71):
+        result += "7.1";
+        break;
+
+      case (waveformat_mask_surround714):
+        result += "7.1.4";
+        break;
+
+      default:
+        result += std::to_string(waveformat.Format.nChannels) + " channels (unrecognized)";
+        break;
+    }
+
+    return result;
+  }
+
+}  // namespace
+
+using namespace std::literals;
+
+namespace platf::audio {
+
+  template <class T>
+  void
+  co_task_free(T *p) {
+    CoTaskMemFree((LPVOID) p);
+  }
+
+  using device_enum_t = util::safe_ptr<IMMDeviceEnumerator, Release<IMMDeviceEnumerator>>;
+  using device_t = util::safe_ptr<IMMDevice, Release<IMMDevice>>;
+  using collection_t = util::safe_ptr<IMMDeviceCollection, Release<IMMDeviceCollection>>;
+  using audio_client_t = util::safe_ptr<IAudioClient, Release<IAudioClient>>;
+  using audio_capture_t = util::safe_ptr<IAudioCaptureClient, Release<IAudioCaptureClient>>;
+  using wave_format_t = util::safe_ptr<WAVEFORMATEX, co_task_free<WAVEFORMATEX>>;
+  using wstring_t = util::safe_ptr<WCHAR, co_task_free<WCHAR>>;
+  using handle_t = util::safe_ptr_v2<void, BOOL, CloseHandle>;
+  using policy_t = util::safe_ptr<IPolicyConfig, Release<IPolicyConfig>>;
+  using prop_t = util::safe_ptr<IPropertyStore, Release<IPropertyStore>>;
+
+  class co_init_t: public deinit_t {
+  public:
+    co_init_t():
+        status {CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_SPEED_OVER_MEMORY)} {
+    }
+
+    ~co_init_t() override {
+      if (SUCCEEDED(status)) {
+        CoUninitialize();
+      }
+    }
+
+    [[nodiscard]] bool
+    initialized() const noexcept {
+      // RPC_E_CHANGED_MODE 表示当前线程已经属于另一种 COM 单元模型。
+      // 此时 COM 仍可使用，但当前守卫不能负责反初始化已有单元。
+      return SUCCEEDED(status) || status == RPC_E_CHANGED_MODE;
+    }
+
+    [[nodiscard]] HRESULT
+    result() const noexcept {
+      return status;
+    }
+
+  private:
+    HRESULT status;
+  };
+
+  class prop_var_t {
+  public:
+    prop_var_t() {
+      PropVariantInit(&prop);
+    }
+
+    ~prop_var_t() {
+      PropVariantClear(&prop);
+    }
+
+    PROPVARIANT prop;
+  };
+
+  struct format_t {
+    WORD channel_count;
+    std::string name;
+    int capture_waveformat_channel_mask;
+    virtual_sink_waveformats_t virtual_sink_waveformats;
+  };
+
+  const std::array<const format_t, 4> formats = {
+    format_t {
+      2,
+      "Stereo",
+      waveformat_mask_stereo,
+      create_virtual_sink_waveformats<2>(),
+    },
+    format_t {
+      6,
+      "Surround 5.1",
+      waveformat_mask_surround51_with_backspeakers,
+      create_virtual_sink_waveformats<6>(),
+    },
+    format_t {
+      8,
+      "Surround 7.1",
+      waveformat_mask_surround71,
+      create_virtual_sink_waveformats<8>(),
+    },
+    format_t {
+      12,
+      "Surround 7.1.4",
+      waveformat_mask_surround714,
+      create_virtual_sink_waveformats<12>(),
+    },
+  };
+
+  audio_client_t
+  make_audio_client(device_t &device, const format_t &format) {
+    audio_client_t audio_client;
+    auto status = device->Activate(
+      IID_IAudioClient,
+      CLSCTX_ALL,
+      nullptr,
+      (void **) &audio_client);
+
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Couldn't activate Device: [0x"sv << util::hex(status).to_string_view() << ']';
+
+      return nullptr;
+    }
+
+    WAVEFORMATEXTENSIBLE capture_waveformat =
+      create_waveformat(sample_format_e::f32, format.channel_count, format.capture_waveformat_channel_mask);
+
+    {
+      wave_format_t mixer_waveformat;
+      status = audio_client->GetMixFormat(&mixer_waveformat);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't get mix format for audio device: [0x"sv << util::hex(status).to_string_view() << ']';
+        return nullptr;
+      }
+
+      // Prefer the native channel layout of captured audio device when channel counts match
+      if (mixer_waveformat->nChannels == format.channel_count &&
+          mixer_waveformat->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+          mixer_waveformat->cbSize >= 22) {
+        auto waveformatext_pointer = reinterpret_cast<const WAVEFORMATEXTENSIBLE *>(mixer_waveformat.get());
+        capture_waveformat.dwChannelMask = waveformatext_pointer->dwChannelMask;
+      }
+
+      BOOST_LOG(info) << "Audio mixer format is "sv << mixer_waveformat->wBitsPerSample << "-bit, "sv
+                      << mixer_waveformat->nSamplesPerSec << " Hz, "sv
+                      << ((mixer_waveformat->nSamplesPerSec != 48000) ? "will be resampled to 48000 by Windows"sv : "no resampling needed"sv);
+    }
+
+    status = audio_client->Initialize(
+      AUDCLNT_SHAREMODE_SHARED,
+      AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,  // Enable automatic resampling to 48 KHz
+      0,
+      0,
+      (LPWAVEFORMATEX) &capture_waveformat,
+      nullptr);
+
+    if (status) {
+      BOOST_LOG(error) << "Couldn't initialize audio client for ["sv << format.name << "]: [0x"sv << util::hex(status).to_string_view() << ']';
+      return nullptr;
+    }
+
+    BOOST_LOG(info) << "Audio capture format is "sv << logging::bracket(waveformat_to_pretty_string(capture_waveformat));
+
+    return audio_client;
+  }
+
+  device_t
+  default_device(device_enum_t &device_enum) {
+    device_t device;
+    HRESULT status;
+    status = device_enum->GetDefaultAudioEndpoint(
+      eRender,
+      eConsole,
+      &device);
+
+    if (FAILED(status)) {
+      BOOST_LOG(error) << "Couldn't get default audio endpoint [0x"sv << util::hex(status).to_string_view() << ']';
+
+      return nullptr;
+    }
+
+    return device;
+  }
+
+  class audio_notification_t: public ::IMMNotificationClient {
+  public:
+    audio_notification_t() {
+    }
+
+    // IUnknown implementation (unused by IMMDeviceEnumerator)
+    ULONG STDMETHODCALLTYPE
+    AddRef() {
+      return 1;
+    }
+
+    ULONG STDMETHODCALLTYPE
+    Release() {
+      return 1;
+    }
+
+    HRESULT STDMETHODCALLTYPE
+    QueryInterface(REFIID riid, VOID **ppvInterface) {
+      if (IID_IUnknown == riid) {
+        AddRef();
+        *ppvInterface = (IUnknown *) this;
+        return S_OK;
+      }
+      else if (__uuidof(IMMNotificationClient) == riid) {
+        AddRef();
+        *ppvInterface = (IMMNotificationClient *) this;
+        return S_OK;
+      }
+      else {
+        *ppvInterface = NULL;
+        return E_NOINTERFACE;
+      }
+    }
+
+    // IMMNotificationClient
+    HRESULT STDMETHODCALLTYPE
+    OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDeviceId) {
+      if (flow == eRender) {
+        default_render_device_changed_flag.store(true);
+      }
+      return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE
+    OnDeviceAdded(LPCWSTR pwstrDeviceId) {
+      return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE
+    OnDeviceRemoved(LPCWSTR pwstrDeviceId) {
+      return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE
+    OnDeviceStateChanged(
+      LPCWSTR pwstrDeviceId,
+      DWORD dwNewState) {
+      return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE
+    OnPropertyValueChanged(
+      LPCWSTR pwstrDeviceId,
+      const PROPERTYKEY key) {
+      return S_OK;
+    }
+
+    /**
+     * @brief Checks if the default rendering device changed and resets the change flag
+     * @return `true` if the device changed since last call
+     */
+    bool
+    check_default_render_device_changed() {
+      return default_render_device_changed_flag.exchange(false);
+    }
+
+  private:
+    std::atomic_bool default_render_device_changed_flag;
+  };
+
+  class mic_wasapi_t: public mic_t {
+  public:
+    capture_e
+    sample(std::vector<float> &sample_out) override {
+      auto sample_size = sample_out.size();
+
+      // Refill the sample buffer if needed
+      while (sample_buf_pos - std::begin(sample_buf) < sample_size) {
+        auto capture_result = _fill_buffer();
+        if (capture_result == capture_e::timeout && continuous_audio) {
+          // Pad with silence only up to the requested frame boundary so any
+          // partial samples that _fill_buffer() managed to write before the
+          // timeout are preserved instead of being shifted into the next
+          // frame, which would cause a cumulative timing drift.
+          const auto remaining = sample_size - (sample_buf_pos - std::begin(sample_buf));
+          std::fill_n(sample_buf_pos, remaining, 0.0f);
+          sample_buf_pos += remaining;
+        } else if (capture_result != capture_e::ok) {
+          return capture_result;
+        }
+      }
+
+      // Fill the output buffer with samples
+      std::copy_n(std::begin(sample_buf), sample_size, std::begin(sample_out));
+
+      // Move any excess samples to the front of the buffer
+      std::move(&sample_buf[sample_size], sample_buf_pos, std::begin(sample_buf));
+      sample_buf_pos -= sample_size;
+
+      return capture_e::ok;
+    }
+
+    int
+    init(std::uint32_t sample_rate, std::uint32_t frame_size, std::uint32_t channels_out, bool continuous, std::optional<std::wstring> selected_device_id) {
+      audio_event.reset(CreateEventA(nullptr, FALSE, FALSE, nullptr));
+      if (!audio_event) {
+        BOOST_LOG(error) << "Couldn't create Event handle"sv;
+
+        return -1;
+      }
+
+      HRESULT status;
+
+      status = CoCreateInstance(
+        CLSID_MMDeviceEnumerator,
+        nullptr,
+        CLSCTX_ALL,
+        IID_IMMDeviceEnumerator,
+        (void **) &device_enum);
+
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't create Device Enumerator [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      status = device_enum->RegisterEndpointNotificationCallback(&endpt_notification);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't register endpoint notification [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      device_t device;
+      if (selected_device_id) {
+        auto status = device_enum->GetDevice(selected_device_id->c_str(), &device);
+        if (FAILED(status)) {
+          BOOST_LOG(error) << "Couldn't open the selected audio sink [0x"sv << util::hex(status).to_string_view() << ']';
+          return -1;
+        }
+      }
+      else {
+        device = default_device(device_enum);
+        if (!device) {
+          return -1;
+        }
+      }
+
+      for (const auto &format : formats) {
+        if (format.channel_count != channels_out) {
+          BOOST_LOG(debug) << "Skipping audio format ["sv << format.name << "] with channel count ["sv
+                           << format.channel_count << " != "sv << channels_out << ']';
+          continue;
+        }
+
+        BOOST_LOG(debug) << "Trying audio format ["sv << format.name << ']';
+        audio_client = make_audio_client(device, format);
+
+        if (audio_client) {
+          BOOST_LOG(debug) << "Found audio format ["sv << format.name << ']';
+          channels = channels_out;
+          break;
+        }
+      }
+
+      if (!audio_client) {
+        BOOST_LOG(error) << "Couldn't find supported format for audio"sv;
+        return -1;
+      }
+
+      REFERENCE_TIME default_latency;
+      audio_client->GetDevicePeriod(&default_latency, nullptr);
+      default_latency_ms = default_latency / 1000;
+      continuous_audio = continuous;
+
+      std::uint32_t frames;
+      status = audio_client->GetBufferSize(&frames);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't acquire the number of audio frames [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      // *2 --> needs to fit double
+      sample_buf = util::buffer_t<float> { std::max(frames, frame_size) * 2 * channels_out };
+      sample_buf_pos = std::begin(sample_buf);
+
+      status = audio_client->GetService(IID_IAudioCaptureClient, (void **) &audio_capture);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't initialize audio capture client [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      status = audio_client->SetEventHandle(audio_event.get());
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't set event handle [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      {
+        DWORD task_index = 0;
+        mmcss_task_handle = AvSetMmThreadCharacteristics("Pro Audio", &task_index);
+        if (!mmcss_task_handle) {
+          BOOST_LOG(error) << "Couldn't associate audio capture thread with Pro Audio MMCSS task [0x" << util::hex(GetLastError()).to_string_view() << ']';
+        }
+      }
+
+      status = audio_client->Start();
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't start recording [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      return 0;
+    }
+
+    ~mic_wasapi_t() override {
+      if (device_enum) {
+        device_enum->UnregisterEndpointNotificationCallback(&endpt_notification);
+      }
+
+      if (audio_client) {
+        audio_client->Stop();
+      }
+
+      if (mmcss_task_handle) {
+        AvRevertMmThreadCharacteristics(mmcss_task_handle);
+      }
+    }
+
+  private:
+    capture_e
+    _fill_buffer() {
+      HRESULT status;
+
+      // Total number of samples
+      struct sample_aligned_t {
+        std::uint32_t uninitialized;
+        float *samples;
+      } sample_aligned;
+
+      // number of samples / number of channels
+      struct block_aligned_t {
+        std::uint32_t audio_sample_size;
+      } block_aligned;
+
+      // Check if the default audio device has changed
+      if (endpt_notification.check_default_render_device_changed()) {
+        // Invoke the audio_control_t's callback if it wants one
+        if (default_endpt_changed_cb) {
+          (*default_endpt_changed_cb)();
+        }
+
+        // Reinitialize to pick up the new default device
+        return capture_e::reinit;
+      }
+
+      status = WaitForSingleObjectEx(audio_event.get(), default_latency_ms, FALSE);
+      switch (status) {
+        case WAIT_OBJECT_0:
+          break;
+        case WAIT_TIMEOUT:
+          return capture_e::timeout;
+        default:
+          BOOST_LOG(error) << "Couldn't wait for audio event: [0x"sv << util::hex(status).to_string_view() << ']';
+          return capture_e::error;
+      }
+
+      std::uint32_t packet_size {};
+      for (
+        status = audio_capture->GetNextPacketSize(&packet_size);
+        SUCCEEDED(status) && packet_size > 0;
+        status = audio_capture->GetNextPacketSize(&packet_size)) {
+        DWORD buffer_flags;
+        status = audio_capture->GetBuffer(
+          (BYTE **) &sample_aligned.samples,
+          &block_aligned.audio_sample_size,
+          &buffer_flags,
+          nullptr,
+          nullptr);
+
+        switch (status) {
+          case S_OK:
+            break;
+          case AUDCLNT_E_DEVICE_INVALIDATED:
+            return capture_e::reinit;
+          default:
+            BOOST_LOG(error) << "Couldn't capture audio [0x"sv << util::hex(status).to_string_view() << ']';
+            return capture_e::error;
+        }
+
+        if (buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
+          BOOST_LOG(debug) << "Audio capture signaled buffer discontinuity";
+        }
+
+        sample_aligned.uninitialized = std::end(sample_buf) - sample_buf_pos;
+        auto n = std::min(sample_aligned.uninitialized, block_aligned.audio_sample_size * channels);
+
+        if (n < block_aligned.audio_sample_size * channels) {
+          BOOST_LOG(warning) << "Audio capture buffer overflow";
+        }
+
+        if (buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+          std::fill_n(sample_buf_pos, n, 0);
+        }
+        else {
+          std::copy_n(sample_aligned.samples, n, sample_buf_pos);
+        }
+
+        sample_buf_pos += n;
+
+        audio_capture->ReleaseBuffer(block_aligned.audio_sample_size);
+      }
+
+      if (status == AUDCLNT_E_DEVICE_INVALIDATED) {
+        return capture_e::reinit;
+      }
+
+      if (FAILED(status)) {
+        return capture_e::error;
+      }
+
+      return capture_e::ok;
+    }
+
+  public:
+    handle_t audio_event;
+
+    device_enum_t device_enum;
+    device_t device;
+    audio_client_t audio_client;
+    audio_capture_t audio_capture;
+
+    audio_notification_t endpt_notification;
+    std::optional<std::function<void()>> default_endpt_changed_cb;
+
+    REFERENCE_TIME default_latency_ms;
+
+    util::buffer_t<float> sample_buf;
+    float *sample_buf_pos;
+    int channels;
+    bool continuous_audio;
+
+    HANDLE mmcss_task_handle = NULL;
+  };
+
+  // 初始化、写入和释放操作都由麦克风接收线程串行执行。
+  std::unique_ptr<mic_write_wasapi_t> mic_redirect_device;
+  enum class mic_backend_e {
+    none,
+    vb_cable,
+    usbip,
+  };
+  enum class mic_redirect_owner_e {
+    none,
+    session,
+    test,
+  };
+  std::atomic<mic_backend_e> active_mic_backend { mic_backend_e::none };
+  std::atomic<mic_redirect_owner_e> mic_redirect_owner { mic_redirect_owner_e::none };
+  std::mutex mic_backend_status_mutex;
+  std::string mic_backend_fallback_reason;
+
+  void
+  report_mic_redirect_backend(std::string active_backend, std::string fallback_reason) {
+    if (active_backend == "usbip_experimental") {
+      active_mic_backend = mic_backend_e::usbip;
+    }
+    else if (active_backend == "vb_cable") {
+      active_mic_backend = mic_backend_e::vb_cable;
+    }
+    else {
+      active_mic_backend = mic_backend_e::none;
+    }
+    std::lock_guard lock(mic_backend_status_mutex);
+    mic_backend_fallback_reason = std::move(fallback_reason);
+  }
+
+  bool
+  try_begin_mic_redirect_test() {
+    auto expected = mic_redirect_owner_e::none;
+    return mic_redirect_owner.compare_exchange_strong(
+      expected, mic_redirect_owner_e::test);
+  }
+
+  void
+  end_mic_redirect_test() {
+    auto expected = mic_redirect_owner_e::test;
+    mic_redirect_owner.compare_exchange_strong(
+      expected, mic_redirect_owner_e::none);
+  }
+
+  mic_redirect_status_t
+  mic_redirect_status() {
+    mic_redirect_status_t result;
+    result.configured_backend = config::audio.microphone_redirect_backend;
+    switch (active_mic_backend.load()) {
+      case mic_backend_e::usbip:
+        result.active_backend = "usbip_experimental";
+        break;
+      case mic_backend_e::vb_cable:
+        result.active_backend = "vb_cable";
+        break;
+      default:
+        break;
+    }
+    {
+      std::lock_guard lock(mic_backend_status_mutex);
+      result.fallback_reason = mic_backend_fallback_reason;
+    }
+    const auto usbip = virtual_device_host::microphone_status();
+    result.component_available = usbip.component_available;
+    if (result.active_backend == "usbip_experimental" ||
+        (result.active_backend.empty() &&
+         (usbip.device_created || !usbip.error_code.empty()))) {
+      result.online = usbip.online;
+      result.device_created = usbip.device_created;
+      result.host_streaming = usbip.host_streaming;
+      result.generation = usbip.generation;
+      result.buffered_bytes = usbip.buffered_bytes;
+      result.underruns = usbip.underruns;
+      result.dropped_frames = usbip.dropped_frames;
+      result.submit_errors = usbip.submit_errors;
+      result.last_error = usbip.last_error;
+      result.state = usbip.state;
+      result.error_code = usbip.error_code;
+    }
+    else if (result.active_backend == "vb_cable") {
+      result.online = true;
+      result.device_created = true;
+      result.state = "ready";
+    }
+    return result;
+  }
+
+  class audio_control_t: public ::platf::audio_control_t {
+  public:
+    std::optional<sink_t>
+    sink_info() override {
+      sink_t sink;
+
+      // Fill host sink name with the device_id of the current default audio device.
+      {
+        auto device = default_device(device_enum);
+        if (!device) {
+          return std::nullopt;
+        }
+
+        audio::wstring_t id;
+        device->GetId(&id);
+
+        sink.host = to_utf8(id.get());
+      }
+
+      // Prepare to search for the device_id of the virtual audio sink device,
+      // this device can be either user-configured or
+      // the Steam Streaming Speakers we use by default.
+      match_fields_list_t match_list;
+      if (config::audio.virtual_sink.empty()) {
+        match_list = match_steam_speakers();
+      }
+      else {
+        match_list = match_all_fields(from_utf8(config::audio.virtual_sink));
+      }
+
+      // Search for the virtual audio sink device currently present in the system.
+      auto matched = find_device_id(match_list);
+      if (matched) {
+        // Prepare to fill virtual audio sink names with device_id.
+        auto device_id = to_utf8(matched->second);
+        // Also prepend format name (basically channel layout at the moment)
+        // because we don't want to extend the platform interface.
+        sink.null = std::make_optional(sink_t::null_t {
+          "virtual-"s + formats[0].name + device_id,
+          "virtual-"s + formats[1].name + device_id,
+          "virtual-"s + formats[2].name + device_id,
+          "virtual-"s + formats[3].name + device_id,
+        });
+      }
+      else if (!config::audio.virtual_sink.empty()) {
+        BOOST_LOG(warning) << "Couldn't find the specified virtual audio sink " << config::audio.virtual_sink;
+      }
+
+      return sink;
+    }
+
+    bool
+    is_sink_available(const std::string &sink) override {
+      const auto match_list = match_all_fields(from_utf8(sink));
+      const auto matched = find_device_id(match_list);
+      return static_cast<bool>(matched);
+    }
+
+    /**
+     * @brief Extract virtual audio sink information possibly encoded in the sink name.
+     * @param sink The sink name
+     * @return A pair of device_id and format reference if the sink name matches
+     *         our naming scheme for virtual audio sinks, `std::nullopt` otherwise.
+     */
+    std::optional<std::pair<std::wstring, std::reference_wrapper<const format_t>>>
+    extract_virtual_sink_info(const std::string &sink) {
+      // Encoding format:
+      // [virtual-(format name)]device_id
+      std::string current = sink;
+      auto prefix = "virtual-"sv;
+      if (current.find(prefix) == 0) {
+        current = current.substr(prefix.size(), current.size() - prefix.size());
+
+        // Reverse order, "Surround 7.1.4" has to be tried before its prefix "Surround 7.1"
+        for (auto format = formats.rbegin(); format != formats.rend(); ++format) {
+          auto &name = format->name;
+          if (current.find(name) == 0) {
+            auto device_id = from_utf8(current.substr(name.size(), current.size() - name.size()));
+            return std::make_pair(device_id, std::reference_wrapper(*format));
+          }
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    /**
+     * @brief Get the bit depth of the default audio device.
+     * @return Valid bits per sample, `std::nullopt` if the device format can't be read.
+     */
+    std::optional<int>
+    default_device_bits_per_sample() {
+      auto current_default_dev = default_device(device_enum);
+      if (current_default_dev) {
+        audio::prop_t prop;
+        prop_var_t current_device_format;
+
+        if (SUCCEEDED(current_default_dev->OpenPropertyStore(STGM_READ, &prop)) && SUCCEEDED(prop->GetValue(PKEY_AudioEngine_DeviceFormat, &current_device_format.prop))) {
+          auto *format = (WAVEFORMATEXTENSIBLE *) current_device_format.prop.blob.pBlobData;
+          return format->Samples.wValidBitsPerSample;
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    bool
+    is_sink_format_supported(const std::string &sink) override {
+      auto virtual_sink_info = extract_virtual_sink_info(sink);
+      if (!virtual_sink_info) {
+        return true;
+      }
+
+      device_t device;
+      audio_client_t audio_client;
+      if (FAILED(device_enum->GetDevice(virtual_sink_info->first.c_str(), &device)) ||
+          FAILED(device->Activate(IID_IAudioClient, CLSCTX_ALL, nullptr, (void **) &audio_client))) {
+        return true;
+      }
+
+      // Only the waveformats set_format() would try, a device that rejects all of them counts as unsupported
+      auto wanted_bits_per_sample = default_device_bits_per_sample().value_or(32);
+      for (const auto &waveformat : virtual_sink_info->second.get().virtual_sink_waveformats) {
+        if (wanted_bits_per_sample != waveformat.Samples.wValidBitsPerSample) {
+          continue;
+        }
+
+        if (audio_client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, (const WAVEFORMATEX *) &waveformat, nullptr) != AUDCLNT_E_UNSUPPORTED_FORMAT) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    std::optional<std::wstring>
+    resolve_sink_device_id(const std::string &sink) {
+      if (auto virtual_sink_info = extract_virtual_sink_info(sink)) {
+        return virtual_sink_info->first;
+      }
+
+      auto matched = find_device_id(match_all_fields(from_utf8(sink)));
+      if (matched) {
+        return matched->second;
+      }
+
+      return std::nullopt;
+    }
+
+    bool
+    all_default_roles_match(const std::wstring &expected_device_id) {
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        device_t device;
+        auto status = device_enum->GetDefaultAudioEndpoint(
+          eRender,
+          (ERole) role,
+          &device);
+        if (FAILED(status) || !device) {
+          return false;
+        }
+
+        audio::wstring_t id;
+        if (FAILED(device->GetId(&id)) || expected_device_id != id.get()) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
+    std::optional<std::wstring>
+    default_device_id_for_role(int role) {
+      device_t device;
+      auto status = device_enum->GetDefaultAudioEndpoint(
+        eRender,
+        (ERole) role,
+        &device);
+      if (FAILED(status) || !device) {
+        return std::nullopt;
+      }
+
+      audio::wstring_t id;
+      if (FAILED(device->GetId(&id))) {
+        return std::nullopt;
+      }
+
+      return std::wstring { id.get() };
+    }
+
+    std::optional<std::vector<std::optional<std::wstring>>>
+    capture_default_device_roles() {
+      std::vector<std::optional<std::wstring>> defaults;
+      defaults.reserve(ERole_enum_count);
+
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        auto device_id = default_device_id_for_role(role);
+        if (!device_id) {
+          BOOST_LOG(error) << "Couldn't read the default audio device for role ["sv << role << ']';
+          return std::nullopt;
+        }
+        defaults.emplace_back(std::move(*device_id));
+      }
+
+      return defaults;
+    }
+
+    void
+    log_set_default_endpoint_failure(const std::string &sink, int role, HRESULT status) {
+      if (status == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || status == E_INVALIDARG) {
+        BOOST_LOG(warning) << "Audio sink not found: "sv << sink;
+      }
+      else {
+        BOOST_LOG(warning) << "Couldn't set ["sv << sink << "] to role ["sv << role << "]: 0x"sv
+                          << util::hex(status).to_string_view();
+      }
+    }
+
+    int
+    set_default_device_roles(
+      const std::wstring &device_id,
+      const std::string &sink,
+      const std::vector<std::optional<std::wstring>> &rollback_device_ids) {
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        auto status = policy->SetDefaultEndpoint(device_id.c_str(), (ERole) role);
+        if (FAILED(status)) {
+          log_set_default_endpoint_failure(sink, role, status);
+
+          for (int rollback_role = 0; rollback_role < role; ++rollback_role) {
+            const auto &rollback_device_id = rollback_device_ids[rollback_role];
+            if (!rollback_device_id) {
+              continue;
+            }
+
+            auto current_device_id = default_device_id_for_role(rollback_role);
+            if (current_device_id && *current_device_id == device_id) {
+              auto rollback_status = policy->SetDefaultEndpoint(
+                rollback_device_id->c_str(),
+                (ERole) rollback_role);
+              if (FAILED(rollback_status)) {
+                log_set_default_endpoint_failure(sink, rollback_role, rollback_status);
+              }
+            }
+          }
+
+          return -1;
+        }
+      }
+
+      return 0;
+    }
+
+    void
+    restore_assigned_sink() {
+      std::lock_guard lock { assigned_sink_mutex };
+
+      const auto &sink = assigned_sink;
+      if (!config::audio.keep_sink_default || sink.empty()) {
+        return;
+      }
+
+      if (assigned_sink_device_id && all_default_roles_match(*assigned_sink_device_id)) {
+        return;
+      }
+
+      auto rollback_device_ids = capture_default_device_roles();
+      if (!rollback_device_ids) {
+        return;
+      }
+
+      auto virtual_sink_info = extract_virtual_sink_info(sink);
+      if (virtual_sink_info) {
+        BOOST_LOG(info) << "Restoring virtual audio sink after default device changed";
+        notify_virtual_sink_managed();
+      }
+      else {
+        BOOST_LOG(info) << "Restoring selected audio sink after default device changed";
+      }
+
+      if (!assigned_sink_device_id ||
+          set_default_device_roles(*assigned_sink_device_id, sink, *rollback_device_ids)) {
+        BOOST_LOG(warning) << "Couldn't restore selected audio sink after default device changed";
+      }
+    }
+
+    std::unique_ptr<mic_t>
+    microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio) override {
+      auto mic = std::make_unique<mic_wasapi_t>();
+
+      if (mic->init(sample_rate, frame_size, channels, continuous_audio, {})) {
+        return nullptr;
+      }
+
+      // The target is read when the device changes so sessions created before the
+      // initial sink assignment can still restore the selected sink.
+      mic->default_endpt_changed_cb = [this] {
+        restore_assigned_sink();
+      };
+
+      return mic;
+    }
+
+    std::unique_ptr<mic_t>
+    microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, const std::string &sink) override {
+      std::optional<std::wstring> selected_device_id;
+      if (!sink.empty()) {
+        selected_device_id = resolve_sink_device_id(sink);
+        if (!selected_device_id) {
+          BOOST_LOG(error) << "Couldn't find the configured audio capture sink "sv << sink;
+          return nullptr;
+        }
+      }
+
+      auto mic = std::make_unique<mic_wasapi_t>();
+
+      if (mic->init(sample_rate, frame_size, channels, continuous_audio, std::move(selected_device_id))) {
+        return nullptr;
+      }
+
+      // The target is read when the device changes so sessions created before the
+      // initial sink assignment can still restore the selected sink.
+      mic->default_endpt_changed_cb = [this] {
+        restore_assigned_sink();
+      };
+
+      return mic;
+    }
+
+    /**
+     * If the requested sink is a virtual sink, meaning no speakers attached to
+     * the host, then we can seamlessly set the format to stereo and surround sound.
+     *
+     * Any virtual sink detected will be prefixed by:
+     *    virtual-(format name)
+     * If it doesn't contain that prefix, then the format will not be changed
+     */
+    std::optional<std::wstring>
+    set_format(const std::string &sink) {
+      if (sink.empty()) {
+        return std::nullopt;
+      }
+
+      auto virtual_sink_info = extract_virtual_sink_info(sink);
+
+      if (!virtual_sink_info) {
+        // Sink name does not begin with virtual-(format name), hence it's not a virtual sink
+        // and we don't want to change playback format of the corresponding device.
+        // Also need to perform matching, sink name is not necessarily device_id in this case.
+        auto matched = find_device_id(match_all_fields(from_utf8(sink)));
+        if (matched) {
+          return matched->second;
+        }
+        else {
+          BOOST_LOG(error) << "Couldn't find audio sink " << sink;
+          return std::nullopt;
+        }
+      }
+
+      // When switching to a Steam virtual speaker device, try to retain the bit depth of the
+      // default audio device. Switching from a 16-bit device to a 24-bit one has been known to
+      // cause glitches for some users.
+      int wanted_bits_per_sample = 32;
+      if (auto bits = default_device_bits_per_sample()) {
+        wanted_bits_per_sample = *bits;
+        BOOST_LOG(info) << "Virtual audio device will use "sv << wanted_bits_per_sample << "-bit to match default device"sv;
+      }
+
+      auto &device_id = virtual_sink_info->first;
+      auto &waveformats = virtual_sink_info->second.get().virtual_sink_waveformats;
+      for (const auto &waveformat : waveformats) {
+        // We're using completely undocumented and unlisted API,
+        // better not pass objects without copying them first.
+        auto device_id_copy = device_id;
+        auto waveformat_copy = waveformat;
+        auto waveformat_copy_pointer = reinterpret_cast<WAVEFORMATEX *>(&waveformat_copy);
+
+        if (wanted_bits_per_sample != waveformat.Samples.wValidBitsPerSample) {
+          continue;
+        }
+
+        WAVEFORMATEXTENSIBLE p {};
+        if (SUCCEEDED(policy->SetDeviceFormat(device_id_copy.c_str(), waveformat_copy_pointer, (WAVEFORMATEX *) &p))) {
+          BOOST_LOG(info) << "Changed virtual audio sink format to " << logging::bracket(waveformat_to_pretty_string(waveformat));
+          return device_id;
+        }
+      }
+
+      BOOST_LOG(error) << "Couldn't set virtual audio sink waveformat";
+      return std::nullopt;
+    }
+
+    int
+    set_sink(const std::string &sink) override {
+      std::lock_guard lock { assigned_sink_mutex };
+
+      return set_sink_locked(sink);
+    }
+
+    bool
+    restore_sink_if_assigned(const std::string &sink) override {
+      std::lock_guard lock { assigned_sink_mutex };
+
+      if (assigned_sink.empty()) {
+        BOOST_LOG(debug) << "Audio sink was not assigned by Sunshine; skipping restoration";
+        return true;
+      }
+
+      if (!assigned_sink_device_id) {
+        BOOST_LOG(debug) << "Skipping audio sink restoration because the assigned device is unavailable";
+        return true;
+      }
+
+      bool restored_any {};
+      for (int role = 0; role < (int) ERole_enum_count; ++role) {
+        auto current_device_id = default_device_id_for_role(role);
+        if (!current_device_id || *current_device_id != *assigned_sink_device_id) {
+          continue;
+        }
+
+        const auto &original_device_id = original_default_device_roles[role];
+        if (!original_device_id || *original_device_id == *assigned_sink_device_id) {
+          continue;
+        }
+
+        auto status = policy->SetDefaultEndpoint(original_device_id->c_str(), (ERole) role);
+        if (FAILED(status)) {
+          log_set_default_endpoint_failure("the original audio sink"s, role, status);
+          continue;
+        }
+
+        restored_any = true;
+      }
+
+      BOOST_LOG(debug) << (restored_any ?
+                             "Restored the original audio sink roles after streaming"sv :
+                             "Skipped audio sink restoration because no assigned role changed"sv);
+      assigned_sink.clear();
+      assigned_sink_device_id.reset();
+      original_default_device_roles.clear();
+      return true;
+    }
+
+    bool
+    has_assigned_sink() override {
+      std::lock_guard lock { assigned_sink_mutex };
+      return !assigned_sink.empty();
+    }
+
+  private:
+    int
+    set_sink_locked(const std::string &sink) {
+      assigned_sink.clear();
+      assigned_sink_device_id.reset();
+      original_default_device_roles.clear();
+
+      auto device_id = set_format(sink);
+      if (!device_id) {
+        return -1;
+      }
+
+      auto original_device_roles = capture_default_device_roles();
+      if (!original_device_roles) {
+        return -1;
+      }
+
+      if (set_default_device_roles(*device_id, sink, *original_device_roles)) {
+        return -1;
+      }
+
+      assigned_sink = sink;
+      assigned_sink_device_id = *device_id;
+      original_default_device_roles = std::move(*original_device_roles);
+      return 0;
+    }
+
+  public:
+    void
+    notify_virtual_sink_managed() {
+      const auto now = std::chrono::steady_clock::now();
+      std::lock_guard<std::mutex> lock(last_virtual_sink_notification_mutex);
+      if (now - last_virtual_sink_notification < std::chrono::seconds(30)) {
+        return;
+      }
+
+      last_virtual_sink_notification = now;
+      BOOST_LOG(info) << "Virtual audio sink is being kept selected for host audio streaming";
+      const auto notification_id = tray_state::set_notification(
+        "Audio device kept for streaming",
+        "Sunshine is keeping the virtual audio device selected for host audio streaming. Stop the stream before switching playback devices.");
+      task_pool.pushDelayed([notification_id]() {
+        tray_state::clear_notification_if(notification_id);
+      }, std::chrono::seconds(10));
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      system_tray::show_notification(
+        "Audio device kept for streaming",
+        "Sunshine is keeping the virtual audio device selected for host audio streaming. Stop the stream before switching playback devices.");
+#endif
+    }
+
+    enum class match_field_e {
+      device_id,  ///< Match device_id
+      device_friendly_name,  ///< Match endpoint friendly name
+      adapter_friendly_name,  ///< Match adapter friendly name
+      device_description,  ///< Match endpoint description
+    };
+
+    using match_fields_list_t = std::vector<std::pair<match_field_e, std::wstring>>;
+    using matched_field_t = std::pair<match_field_e, std::wstring>;
+
+    audio_control_t::match_fields_list_t
+    match_steam_speakers() {
+      return {
+        { match_field_e::adapter_friendly_name, L"Steam Streaming Speakers" }
+      };
+    }
+
+    audio_control_t::match_fields_list_t
+    match_all_fields(const std::wstring &name) {
+      return {
+        { match_field_e::device_id, name },  // {0.0.0.00000000}.{29dd7668-45b2-4846-882d-950f55bf7eb8}
+        { match_field_e::device_friendly_name, name },  // Digital Audio (S/PDIF) (High Definition Audio Device)
+        { match_field_e::device_description, name },  // Digital Audio (S/PDIF)
+        { match_field_e::adapter_friendly_name, name },  // High Definition Audio Device
+      };
+    }
+
+    /**
+     * @brief Search for currently present audio device_id using multiple match fields.
+     * @param match_list Pairs of match fields and values
+     * @return Optional pair of matched field and device_id
+     */
+    std::optional<matched_field_t>
+    find_device_id(const match_fields_list_t &match_list) {
+      if (match_list.empty()) {
+        return std::nullopt;
+      }
+
+      collection_t collection;
+      auto status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't enumerate: [0x"sv << util::hex(status).to_string_view() << ']';
+        return std::nullopt;
+      }
+
+      UINT count = 0;
+      collection->GetCount(&count);
+
+      std::vector<std::wstring> matched(match_list.size());
+      for (auto x = 0; x < count; ++x) {
+        audio::device_t device;
+        collection->Item(x, &device);
+
+        audio::wstring_t wstring_id;
+        device->GetId(&wstring_id);
+        std::wstring device_id = wstring_id.get();
+
+        audio::prop_t prop;
+        device->OpenPropertyStore(STGM_READ, &prop);
+
+        prop_var_t adapter_friendly_name;
+        prop_var_t device_friendly_name;
+        prop_var_t device_desc;
+
+        prop->GetValue(PKEY_Device_FriendlyName, &device_friendly_name.prop);
+        prop->GetValue(PKEY_DeviceInterface_FriendlyName, &adapter_friendly_name.prop);
+        prop->GetValue(PKEY_Device_DeviceDesc, &device_desc.prop);
+
+        for (size_t i = 0; i < match_list.size(); i++) {
+          if (matched[i].empty()) {
+            const wchar_t *match_value = nullptr;
+            switch (match_list[i].first) {
+              case match_field_e::device_id:
+                match_value = device_id.c_str();
+                break;
+
+              case match_field_e::device_friendly_name:
+                match_value = device_friendly_name.prop.pwszVal;
+                break;
+
+              case match_field_e::adapter_friendly_name:
+                match_value = adapter_friendly_name.prop.pwszVal;
+                break;
+
+              case match_field_e::device_description:
+                match_value = device_desc.prop.pwszVal;
+                break;
+            }
+            if (match_value && std::wcscmp(match_value, match_list[i].second.c_str()) == 0) {
+              matched[i] = device_id;
+            }
+          }
+        }
+      }
+
+      for (size_t i = 0; i < match_list.size(); i++) {
+        if (!matched[i].empty()) {
+          return matched_field_t(match_list[i].first, matched[i]);
+        }
+      }
+
+      return std::nullopt;
+    }
+
+    /**
+     * @brief Resets the default audio device from Steam Streaming Speakers.
+     */
+    void
+    reset_default_device() {
+      auto matched_steam = find_device_id(match_steam_speakers());
+      if (!matched_steam) {
+        return;
+      }
+      auto steam_device_id = matched_steam->second;
+
+      {
+        // Get the current default audio device (if present)
+        auto current_default_dev = default_device(device_enum);
+        if (!current_default_dev) {
+          return;
+        }
+
+        audio::wstring_t current_default_id;
+        current_default_dev->GetId(&current_default_id);
+
+        // If Steam Streaming Speakers are already not default, we're done.
+        if (steam_device_id != current_default_id.get()) {
+          return;
+        }
+      }
+
+      // Disable the Steam Streaming Speakers temporarily to allow the OS to pick a new default.
+      auto hr = policy->SetEndpointVisibility(steam_device_id.c_str(), FALSE);
+      if (FAILED(hr)) {
+        BOOST_LOG(warning) << "Failed to disable Steam audio device: "sv << util::hex(hr).to_string_view();
+        return;
+      }
+
+      // Get the newly selected default audio device
+      auto new_default_dev = default_device(device_enum);
+
+      // Enable the Steam Streaming Speakers again
+      hr = policy->SetEndpointVisibility(steam_device_id.c_str(), TRUE);
+      if (FAILED(hr)) {
+        BOOST_LOG(warning) << "Failed to enable Steam audio device: "sv << util::hex(hr).to_string_view();
+        return;
+      }
+
+      // If there's now no audio device, the Steam Streaming Speakers were the only device available.
+      // There's no other device to set as the default, so just return.
+      if (!new_default_dev) {
+        return;
+      }
+
+      audio::wstring_t new_default_id;
+      new_default_dev->GetId(&new_default_id);
+
+      // Set the new default audio device
+      for (int x = 0; x < (int) ERole_enum_count; ++x) {
+        policy->SetDefaultEndpoint(new_default_id.get(), (ERole) x);
+      }
+
+      BOOST_LOG(info) << "Successfully reset default audio device"sv;
+    }
+
+    /**
+     * @brief Installs the Steam Streaming Speakers driver, if present.
+     * @return `true` if installation was successful.
+     */
+    bool
+    install_steam_audio_drivers() {
+#ifdef STEAM_DRIVER_SUBDIR
+      // MinGW's libnewdev.a is missing DiInstallDriverW() even though the headers have it,
+      // so we have to load it at runtime. It's Vista or later, so it will always be available.
+      auto newdev = LoadLibraryExW(L"newdev.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+      if (!newdev) {
+        BOOST_LOG(error) << "newdev.dll failed to load"sv;
+        return false;
+      }
+      auto fg = util::fail_guard([newdev]() {
+        FreeLibrary(newdev);
+      });
+
+      auto fn_DiInstallDriverW = (decltype(DiInstallDriverW) *) GetProcAddress(newdev, "DiInstallDriverW");
+      if (!fn_DiInstallDriverW) {
+        BOOST_LOG(error) << "DiInstallDriverW() is missing"sv;
+        return false;
+      }
+
+      // Get the current default audio device (if present)
+      auto old_default_dev = default_device(device_enum);
+
+      // Install the Steam Streaming Speakers driver
+      WCHAR driver_path[MAX_PATH] = {};
+      ExpandEnvironmentStringsW(STEAM_AUDIO_DRIVER_PATH, driver_path, ARRAYSIZE(driver_path));
+      if (fn_DiInstallDriverW(nullptr, driver_path, 0, nullptr)) {
+        BOOST_LOG(info) << "Successfully installed Steam Streaming Speakers"sv;
+
+        // Wait for 5 seconds to allow the audio subsystem to reconfigure things before
+        // modifying the default audio device or enumerating devices again.
+        Sleep(5000);
+
+        // If there was a previous default device, restore that original device as the
+        // default output device just in case installing the new one changed it.
+        if (old_default_dev) {
+          audio::wstring_t old_default_id;
+          old_default_dev->GetId(&old_default_id);
+
+          for (int x = 0; x < (int) ERole_enum_count; ++x) {
+            policy->SetDefaultEndpoint(old_default_id.get(), (ERole) x);
+          }
+        }
+
+        return true;
+      }
+      else {
+        auto err = GetLastError();
+        switch (err) {
+          case ERROR_ACCESS_DENIED:
+            BOOST_LOG(warning) << "Administrator privileges are required to install Steam Streaming Speakers"sv;
+            break;
+          case ERROR_FILE_NOT_FOUND:
+          case ERROR_PATH_NOT_FOUND:
+            BOOST_LOG(info) << "Steam audio drivers not found. This is expected if you don't have Steam installed."sv;
+            break;
+          default:
+            BOOST_LOG(warning) << "Failed to install Steam audio drivers: "sv << err;
+            break;
+        }
+
+        return false;
+      }
+#else
+      BOOST_LOG(warning) << "Unable to install Steam Streaming Speakers on unknown architecture"sv;
+      return false;
+#endif
+    }
+
+    int
+    init() {
+      auto status = CoCreateInstance(
+        CLSID_CPolicyConfigClient,
+        nullptr,
+        CLSCTX_ALL,
+        IID_IPolicyConfig,
+        (void **) &policy);
+
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't create audio policy config: [0x"sv << util::hex(status).to_string_view() << ']';
+
+        return -1;
+      }
+
+      status = CoCreateInstance(
+        CLSID_MMDeviceEnumerator,
+        nullptr,
+        CLSCTX_ALL,
+        IID_IMMDeviceEnumerator,
+        (void **) &device_enum);
+
+      if (FAILED(status)) {
+        BOOST_LOG(error) << "Couldn't create Device Enumerator: [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+
+      return 0;
+    }
+
+    ~audio_control_t() override {
+    }
+
+    policy_t policy;
+    audio::device_enum_t device_enum;
+    std::string assigned_sink;
+    std::optional<std::wstring> assigned_sink_device_id;
+    std::vector<std::optional<std::wstring>> original_default_device_roles;
+    std::mutex assigned_sink_mutex;
+    std::chrono::steady_clock::time_point last_virtual_sink_notification {};
+    std::mutex last_virtual_sink_notification_mutex;
+
+    int
+    init_mic_redirect_device() override {
+      const auto &backend = config::audio.microphone_redirect_backend;
+      std::string usbip_fallback_reason;
+      if (backend == "disabled") {
+        report_mic_redirect_backend({}, "MIC_BACKEND_DISABLED");
+        BOOST_LOG(info) << "Client microphone redirection backend is disabled"sv;
+        return -1;
+      }
+      auto expected_owner = mic_redirect_owner_e::none;
+      if (!mic_redirect_owner.compare_exchange_strong(
+            expected_owner, mic_redirect_owner_e::session)) {
+        BOOST_LOG(warning) << "Microphone redirect path is already in use"sv;
+        return -1;
+      }
+
+      if (backend == "usbip_experimental" || backend == "auto") {
+        auto &usbip = virtual_device_host::persistent_microphone_client();
+        if (usbip.start()) {
+          report_mic_redirect_backend("usbip_experimental");
+          BOOST_LOG(info) << "Using the experimental USB/IP virtual microphone backend"sv;
+          return 0;
+        }
+
+        const auto usbip_status = virtual_device_host::microphone_status();
+        usbip_fallback_reason = usbip_status.error_code.empty() ?
+                                  "MIC_USBIP_DEVICE_UNAVAILABLE"s :
+                                  usbip_status.error_code;
+        if (backend == "usbip_experimental") {
+          report_mic_redirect_backend({}, usbip_fallback_reason);
+          BOOST_LOG(error) << "The experimental USB/IP virtual microphone backend failed: "sv
+                           << usbip_fallback_reason;
+          mic_redirect_owner = mic_redirect_owner_e::none;
+          return -1;
+        }
+        report_mic_redirect_backend("vb_cable", usbip_fallback_reason);
+        BOOST_LOG(warning) << "USB/IP virtual microphone unavailable; falling back to VB-Cable: "sv
+                           << usbip_fallback_reason;
+      }
+
+      if (!mic_redirect_device) {
+        mic_redirect_device = std::make_unique<mic_write_wasapi_t>();
+      }
+
+      if (mic_redirect_device->init() != 0) {
+        BOOST_LOG(warning) << "Failed to initialize client mic redirection device";
+        mic_redirect_device.reset();
+        report_mic_redirect_backend({}, backend == "auto" ?
+                                          usbip_fallback_reason :
+                                          "MIC_TEST_DEVICE_UNAVAILABLE");
+        auto expected_owner = mic_redirect_owner_e::session;
+        mic_redirect_owner.compare_exchange_strong(
+          expected_owner, mic_redirect_owner_e::none);
+        return -1;
+      }
+
+      if (backend != "auto") {
+        report_mic_redirect_backend("vb_cable");
+      }
+      BOOST_LOG(info) << "Successfully initialized client mic redirection device";
+
+      return 0;
+    }
+
+    void
+    release_mic_redirect_device() override {
+      if (active_mic_backend.load() == mic_backend_e::usbip) {
+        auto &usbip = virtual_device_host::persistent_microphone_client();
+        if (!usbip.flush()) {
+          BOOST_LOG(warning) << "Failed to flush the USB/IP virtual microphone"sv;
+        }
+        // Keep the endpoint alive across Moonlight sessions. Its process-wide
+        // owner destroys it when Sunshine exits.
+        mic_redirect_owner = mic_redirect_owner_e::none;
+        return;
+      }
+      if (mic_redirect_device) {
+        mic_redirect_device->restore_audio_devices();
+        mic_redirect_device.reset();
+      }
+      report_mic_redirect_backend({});
+      auto expected_owner = mic_redirect_owner_e::session;
+      mic_redirect_owner.compare_exchange_strong(
+        expected_owner, mic_redirect_owner_e::none);
+    }
+
+    int
+    write_mic_pcm(const std::int16_t *samples, std::size_t frame_count) override {
+      if (active_mic_backend.load() == mic_backend_e::usbip) {
+        return virtual_device_host::persistent_microphone_client().write_pcm(
+          samples, frame_count);
+      }
+      if (!mic_redirect_device || mic_redirect_device->is_cleaning_up.load()) {
+        BOOST_LOG(warning) << "Mic redirect device not available or cleaning up";
+        return -1;
+      }
+
+      return mic_redirect_device->write_pcm(samples, frame_count);
+    }
+  };
+}  // namespace platf::audio
+
+namespace platf {
+
+  // It's not big enough to justify it's own source file :/
+  namespace dxgi {
+    int
+    init();
+  }
+
+  std::unique_ptr<audio_control_t>
+  audio_control() {
+    auto control = std::make_unique<audio::audio_control_t>();
+
+    if (control->init()) {
+      return nullptr;
+    }
+
+    // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
+    // the sink information returned includes the new Steam Streaming Speakers device.
+    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
+      // This is best effort. Don't fail if it doesn't work.
+      control->install_steam_audio_drivers();
+    }
+
+    return control;
+  }
+
+  std::unique_ptr<deinit_t>
+  init_audio_thread() {
+    auto guard = std::make_unique<audio::co_init_t>();
+    if (!guard->initialized()) {
+      BOOST_LOG(error) << "Failed to initialize COM for the audio thread: [0x"sv
+                       << util::hex(guard->result()).to_string_view() << ']';
+      return nullptr;
+    }
+
+    return guard;
+  }
+
+  std::unique_ptr<deinit_t>
+  init() {
+    if (dxgi::init()) {
+      return nullptr;
+    }
+
+    // Initialize COM
+    auto co_init = std::make_unique<platf::audio::co_init_t>();
+
+    // If Steam Streaming Speakers are currently the default audio device,
+    // change the default to something else (if another device is available).
+    audio::audio_control_t audio_ctrl;
+    if (audio_ctrl.init() == 0) {
+      audio_ctrl.reset_default_device();
+    }
+
+    return co_init;
+  }
+}  // namespace platf

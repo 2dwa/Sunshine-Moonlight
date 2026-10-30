@@ -1,0 +1,2688 @@
+// Modified 2026-10-30 for Sunshine-Moonlight; contributor: GPT-6 Astra (AI-assisted).
+use log::{debug, error, info, warn};
+use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
+
+use crate::github_download::{
+    self, DEFAULT_CONNECT_TIMEOUT, DEFAULT_IDLE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT,
+    DownloadAttemptPhase, DownloadRequest,
+};
+
+mod metadata;
+mod preferences;
+
+pub(crate) use metadata::resolve_component_download_candidates;
+
+use metadata::{
+    ReleaseAsset, ReleaseCandidate, ReleaseCatalog, UpdateChannel, candidate_is_newer_than,
+    resolve_catalog, select_candidate,
+};
+
+const UPDATER_HELPER_ARG: &str = "--updater-helper";
+const UPDATE_RESULT_ARG: &str = "--update-result";
+
+// ========== 常量定义 ==========
+const UPDATE_CHECK_INTERVAL: u64 = 4 * 60 * 60; // 4小时（秒）
+
+/// temp 目录中记录“已下载待安装”安装包的标记文件名。
+const UPDATE_CACHE_MARKER_FILE: &str = "sunshine-update-cache.json";
+/// 已下载安装包的最长保留期，超过后随临时目录清理一起删除。
+const UPDATE_CACHE_MAX_AGE_SECS: u64 = 14 * 24 * 60 * 60;
+
+// ========== 数据结构定义 ==========
+
+/// 更新信息，`is_latest` 决定前端以“查看更新内容”还是“下载新版本”模式展示。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UpdateInfo {
+    pub version: String,
+    pub release_notes: String,
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub download_fallback_url: Option<String>,
+    pub download_name: Option<String>,
+    pub download_size: Option<u64>,
+    #[serde(default)]
+    pub download_sha256: Option<String>,
+    #[serde(default)]
+    pub download_type: Option<String>,
+    pub release_page: String,
+    /// `true` = 已是最新（只读浏览），`false`（默认）= 有可用更新
+    #[serde(default)]
+    pub is_latest: bool,
+}
+
+/// temp 目录中已下载安装包的缓存标记，用于跳过重复下载并免于被清理。
+#[derive(Debug, Serialize, Deserialize)]
+struct CachedInstallerMarker {
+    filename: String,
+    size: u64,
+    downloaded_at: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum DownloadPhase {
+    Connecting,
+    Downloading,
+    Retrying,
+    Verifying,
+    Complete,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DownloadErrorCode {
+    SetupFailed,
+    FilePreparationFailed,
+    FileFinalizationFailed,
+    SourcesExhausted,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct DownloadCommandError {
+    code: DownloadErrorCode,
+    detail: String,
+}
+
+impl DownloadCommandError {
+    fn new(code: DownloadErrorCode, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UpdaterHelperState {
+    installer_path: String,
+    extension: String,
+    expected_size: Option<u64>,
+    expected_sha256: String,
+    target_version: Option<String>,
+    gui_exe_path: String,
+    result_path: String,
+    parent_pid: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+struct UpdaterHelperLaunchContext {
+    installer_path: String,
+    expected_size: Option<u64>,
+    expected_sha256: String,
+    gui_exe_path: String,
+    result_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UpdaterHelperResult {
+    success: bool,
+    exit_code: Option<i32>,
+    target_version: Option<String>,
+    message: String,
+    finished_at: u64,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct UpdaterPanelState {
+    title: String,
+    subtitle: String,
+    step: usize,
+    failed: bool,
+    animation_tick: u32,
+}
+
+#[cfg(target_os = "windows")]
+struct UpdaterAnimationFrame {
+    width: i32,
+    height: i32,
+    bgra: Vec<u8>,
+}
+
+#[cfg(target_os = "windows")]
+static UPDATER_PANEL_STATE: OnceLock<Arc<Mutex<UpdaterPanelState>>> = OnceLock::new();
+static UPDATE_CHECKER_STARTED: OnceLock<()> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+static UPDATER_CONSTRUCTION_FRAMES: OnceLock<Option<Vec<UpdaterAnimationFrame>>> = OnceLock::new();
+
+// ========== 版本和通道相关 ==========
+
+async fn get_current_sunshine_version() -> Result<String, String> {
+    crate::sunshine::get_sunshine_version().await
+}
+
+fn channel_description(channel: UpdateChannel) -> &'static str {
+    match channel {
+        UpdateChannel::StableOnly => "稳定版",
+        UpdateChannel::StableAndPrerelease => "稳定版及测试版",
+        UpdateChannel::PrereleaseOnly => "测试版",
+    }
+}
+
+fn preferred_asset_type() -> &'static str {
+    // The Panel only supports the Windows Installer update flow. Portable
+    // archives may remain in metadata for other consumers, but are never
+    // selected or downloaded here.
+    "windows-x64-installer"
+}
+
+fn is_supported_installer_filename(filename: &str) -> bool {
+    Path::new(filename)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+}
+
+fn selected_asset<'a>(candidate: &'a ReleaseCandidate) -> Option<&'a ReleaseAsset> {
+    candidate.assets.iter().find(|asset| {
+        asset.asset_type == preferred_asset_type() && is_supported_installer_filename(&asset.name)
+    })
+}
+
+fn select_compatible_candidate(
+    catalog: &ReleaseCatalog,
+    channel: UpdateChannel,
+) -> Option<ReleaseCandidate> {
+    let compatible_catalog = ReleaseCatalog {
+        latest: catalog
+            .latest
+            .as_ref()
+            .filter(|candidate| selected_asset(candidate).is_some())
+            .cloned(),
+        pre_latest: catalog
+            .pre_latest
+            .as_ref()
+            .filter(|candidate| selected_asset(candidate).is_some())
+            .cloned(),
+    };
+    select_candidate(&compatible_catalog, channel)
+}
+
+fn create_update_info(candidate: &ReleaseCandidate) -> UpdateInfo {
+    let asset = selected_asset(candidate);
+    UpdateInfo {
+        version: candidate.version.clone(),
+        release_notes: candidate.release_notes.clone(),
+        download_url: asset.map(|asset| asset.url.clone()),
+        download_fallback_url: asset.and_then(|asset| asset.fallback_url.clone()),
+        download_name: asset.map(|asset| asset.name.clone()),
+        download_size: asset.map(|asset| asset.size),
+        download_sha256: asset.map(|asset| asset.sha256.clone()),
+        download_type: asset.map(|asset| asset.asset_type.clone()),
+        release_page: candidate.release_page.clone(),
+        is_latest: false,
+    }
+}
+
+/// 检查更新核心逻辑。
+///
+/// `manual=true` 时已是最新也返回 `Some(info { is_latest: true })`，
+/// `manual=false` 时已是最新返回 `None`。
+const SOFTWARE_UPDATES_DISABLED: bool = true;
+
+pub async fn check_for_updates_internal(
+    manual: bool,
+    include_prerelease: bool,
+) -> Result<Option<UpdateInfo>, String> {
+    let channel = if include_prerelease {
+        UpdateChannel::StableAndPrerelease
+    } else {
+        UpdateChannel::StableOnly
+    };
+    check_for_updates_in_channel(manual, channel).await
+}
+
+async fn check_for_updates_in_channel(
+    manual: bool,
+    channel: UpdateChannel,
+) -> Result<Option<UpdateInfo>, String> {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    if SOFTWARE_UPDATES_DISABLED { return Ok(None); }
+
+    info!(
+        "🔍 开始检查更新... (通道: {})",
+        channel_description(channel)
+    );
+
+    // 获取当前 Sunshine 版本
+    let current_version = match get_current_sunshine_version().await {
+        Ok(ver) => ver,
+        Err(e) => {
+            warn!("⚠️ 获取 Sunshine 版本失败: {}, 使用默认版本 0.0.0", e);
+            "0.0.0".to_string()
+        }
+    };
+
+    let catalog = resolve_catalog(channel).await?;
+    let candidate = select_compatible_candidate(&catalog, channel)
+        .ok_or_else(|| format!("未找到包含 {} 更新资产的发布版本", preferred_asset_type()))?;
+
+    info!(
+        "📊 当前 Sunshine 版本: {}, 候选版本: {} ({})",
+        current_version,
+        candidate.version,
+        if candidate.prerelease {
+            "预发布"
+        } else {
+            "稳定版"
+        }
+    );
+
+    if !candidate_is_newer_than(&current_version, &candidate) {
+        if manual {
+            let mut info = create_update_info(&candidate);
+            info.is_latest = true;
+            return Ok(Some(info));
+        }
+        return Ok(None);
+    }
+
+    Ok(Some(create_update_info(&candidate)))
+}
+
+/// 获取当前时间戳（秒）
+fn get_current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+pub fn try_run_updater_helper_from_args() -> bool {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    if SOFTWARE_UPDATES_DISABLED { return false; }
+
+    let args: Vec<String> = std::env::args().collect();
+    let Some(index) = args.iter().position(|arg| arg == UPDATER_HELPER_ARG) else {
+        return false;
+    };
+
+    let Some(state_path) = args.get(index + 1) else {
+        return true;
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        let Some(installer_path) = args.get(index + 2) else {
+            return true;
+        };
+        let Some(expected_size_value) = args.get(index + 3) else {
+            return true;
+        };
+        let Some(expected_sha256) = args
+            .get(index + 4)
+            .and_then(|value| normalize_sha256(value))
+        else {
+            return true;
+        };
+        let Some(gui_exe_path) = args.get(index + 5) else {
+            return true;
+        };
+        let Some(result_path) = args.get(index + 6) else {
+            return true;
+        };
+        let expected_size = if expected_size_value == "-" {
+            None
+        } else {
+            match expected_size_value.parse::<u64>() {
+                Ok(value) => Some(value),
+                Err(_) => return true,
+            }
+        };
+        let launch = UpdaterHelperLaunchContext {
+            installer_path: installer_path.clone(),
+            expected_size,
+            expected_sha256,
+            gui_exe_path: gui_exe_path.clone(),
+            result_path: result_path.clone(),
+        };
+        let _ = run_updater_helper(Path::new(state_path), &launch);
+    }
+
+    true
+}
+
+pub fn emit_update_result_if_requested(app_handle: &AppHandle) {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(index) = args.iter().position(|arg| arg == UPDATE_RESULT_ARG) else {
+        return;
+    };
+
+    let Some(result_path) = args.get(index + 1) else {
+        return;
+    };
+
+    let result_path = PathBuf::from(result_path);
+    let app = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        match fs::read_to_string(&result_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<UpdaterHelperResult>(&content).ok())
+        {
+            Some(result) => {
+                let _ = app.emit("update-install-result", result);
+                if let Some(dir) = updater_cleanup_dir_for_result(&result_path) {
+                    let _ = fs::remove_file(&result_path);
+                    let _ = fs::remove_dir_all(dir);
+                }
+            }
+            None => {
+                let _ = app.emit(
+                    "update-install-result",
+                    serde_json::json!({
+                        "success": false,
+                        "exit_code": null,
+                        "target_version": null,
+                        "message": "Unable to read updater result.",
+                        "finished_at": get_current_timestamp()
+                    }),
+                );
+            }
+        }
+    });
+}
+
+fn updater_cleanup_dir_for_result(result_path: &Path) -> Option<PathBuf> {
+    if result_path.file_name()?.to_string_lossy() != "result.json" {
+        return None;
+    }
+
+    let parent = result_path.parent()?;
+    let dir_name = parent.file_name()?.to_string_lossy();
+    if !dir_name.starts_with("sunshine-updater-") {
+        return None;
+    }
+
+    let temp_dir = std::env::temp_dir().canonicalize().ok()?;
+    let parent = parent.canonicalize().ok()?;
+    if parent.starts_with(temp_dir) {
+        Some(parent)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_updater_helper(
+    state_path: &Path,
+    launch: &UpdaterHelperLaunchContext,
+) -> Result<(), String> {
+    let state_content =
+        fs::read_to_string(state_path).map_err(|e| format!("read updater state failed: {}", e))?;
+    let state: UpdaterHelperState = serde_json::from_str(&state_content)
+        .map_err(|e| format!("parse updater state failed: {}", e))?;
+
+    if state.extension != "exe"
+        || state.installer_path != launch.installer_path
+        || state.expected_size != launch.expected_size
+        || state.expected_sha256 != launch.expected_sha256
+        || state.gui_exe_path != launch.gui_exe_path
+        || state.result_path != launch.result_path
+    {
+        return Err("updater state identity mismatch".to_string());
+    }
+
+    run_updater_panel(state)?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn run_updater_worker(state: UpdaterHelperState, hwnd: isize) {
+    update_updater_panel(hwnd, 0, "准备更新", "正在等待控制面板关闭...");
+    wait_for_parent_exit(state.parent_pid);
+
+    if is_gui_component_installer(Path::new(&state.installer_path)) {
+        update_updater_panel(
+            hwnd,
+            1,
+            "正在更新 GUI",
+            "Sunshine 核心和当前串流将保持运行。",
+        );
+    } else {
+        update_updater_panel(
+            hwnd,
+            1,
+            "正在关闭 Sunshine",
+            "正在关闭 Sunshine 服务，随后安装更新...",
+        );
+        stop_sunshine_for_update();
+    }
+
+    update_updater_panel(
+        hwnd,
+        2,
+        "正在安装更新",
+        "这可能需要一两分钟，请不要重复启动。",
+    );
+    let install_result = run_installer_and_wait(&state);
+
+    update_updater_panel(
+        hwnd,
+        3,
+        "正在完成",
+        "安装已结束，正在准备重新打开控制面板。",
+    );
+    let helper_result = match install_result {
+        Ok(code) => UpdaterHelperResult {
+            success: code == 0,
+            exit_code: Some(code),
+            target_version: state.target_version.clone(),
+            message: if code == 0 {
+                "Update installed successfully.".to_string()
+            } else {
+                format!("Installer exited with code {}.", code)
+            },
+            finished_at: get_current_timestamp(),
+        },
+        Err(error) => UpdaterHelperResult {
+            success: false,
+            exit_code: None,
+            target_version: state.target_version.clone(),
+            message: error,
+            finished_at: get_current_timestamp(),
+        },
+    };
+
+    if helper_result.success {
+        update_updater_panel(hwnd, 3, "更新完成", "正在重新打开 Sunshine 控制面板。");
+    } else {
+        update_updater_panel(hwnd, 3, "更新未完成", "正在重新打开控制面板并显示结果。");
+    }
+
+    let _ = write_updater_result(&state.result_path, &helper_result);
+    let _ = restart_gui_with_update_result(&state.gui_exe_path, &state.result_path);
+
+    std::thread::sleep(Duration::from_millis(900));
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(windows::Win32::Foundation::HWND(hwnd as *mut _)),
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 2,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    }
+}
+fn is_gui_component_installer(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_ascii_lowercase().starts_with("sunshine-gui-setup-"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn run_updater_panel(state: UpdaterHelperState) -> Result<(), String> {
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, HBRUSH, PAINTSTRUCT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+        HWND_TOPMOST, MSG, PostQuitMessage, RegisterClassW, SW_SHOW, SWP_SHOWWINDOW,
+        SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_STYLE,
+        WM_APP, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WM_TIMER, WNDCLASSW,
+        WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    };
+    use windows::core::PCWSTR;
+
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match msg {
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let _ = unsafe { BeginPaint(hwnd, &mut ps) };
+                let _ = unsafe { EndPaint(hwnd, &ps) };
+                draw_updater_panel_cutout(hwnd);
+                LRESULT(0)
+            }
+            WM_ERASEBKGND => LRESULT(1),
+            WM_CLOSE => {
+                update_updater_panel(
+                    hwnd.0 as isize,
+                    current_updater_step(),
+                    "正在安装更新",
+                    "更新正在进行，请稍等片刻。",
+                );
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                let _ =
+                    unsafe { windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), 1) };
+                unsafe { PostQuitMessage(0) };
+                LRESULT(0)
+            }
+            WM_TIMER => {
+                tick_updater_panel();
+                draw_updater_panel_cutout(hwnd);
+                LRESULT(0)
+            }
+            WM_NCHITTEST => LRESULT(windows::Win32::UI::WindowsAndMessaging::HTCAPTION as isize),
+            x if x == WM_APP + 1 => {
+                draw_updater_panel_cutout(hwnd);
+                LRESULT(0)
+            }
+            x if x == WM_APP + 2 => {
+                let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd) };
+                LRESULT(0)
+            }
+            _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+    }
+
+    let state_arc = Arc::new(Mutex::new(UpdaterPanelState {
+        title: "准备更新".to_string(),
+        subtitle: "正在启动更新助手...".to_string(),
+        step: 0,
+        failed: false,
+        animation_tick: 0,
+    }));
+    let _ = UPDATER_PANEL_STATE.set(state_arc);
+
+    let class_name = to_wide_null("SunshineUpdaterPanel");
+    let window_title = to_wide_null("Sunshine 正在更新");
+    let wnd_class = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(wnd_proc),
+        hInstance: HINSTANCE(std::ptr::null_mut()),
+        hbrBackground: HBRUSH(std::ptr::null_mut()),
+        lpszClassName: PCWSTR(class_name.as_ptr()),
+        ..Default::default()
+    };
+
+    unsafe { RegisterClassW(&wnd_class) };
+
+    let width = 560;
+    let height = 240;
+    let (x, y) = updater_panel_position(width, height);
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+            PCWSTR(class_name.as_ptr()),
+            PCWSTR(window_title.as_ptr()),
+            WINDOW_STYLE(WS_POPUP.0),
+            x,
+            y,
+            width,
+            height,
+            None,
+            None,
+            Some(HINSTANCE(std::ptr::null_mut())),
+            None,
+        )
+    }
+    .map_err(|e| format!("create updater panel failed: {}", e))?;
+
+    let hwnd_value = hwnd.0 as isize;
+    std::thread::spawn(move || run_updater_worker(state, hwnd_value));
+
+    let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+    let _ = unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            width,
+            height,
+            SWP_SHOWWINDOW,
+        )
+    };
+    let _ = unsafe { SetTimer(Some(hwnd), 1, 90, None) };
+    let _ = unsafe { SetForegroundWindow(hwnd) };
+    draw_updater_panel_cutout(hwnd);
+    let _ = unsafe { windows::Win32::Graphics::Gdi::UpdateWindow(hwnd) };
+
+    let mut msg = MSG::default();
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+        let _ = unsafe { TranslateMessage(&msg) };
+        unsafe { DispatchMessageW(&msg) };
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn update_updater_panel(hwnd: isize, step: usize, title: &str, subtitle: &str) {
+    if let Some(state) = UPDATER_PANEL_STATE.get() {
+        if let Ok(mut state) = state.lock() {
+            state.step = step;
+            state.title = title.to_string();
+            state.subtitle = subtitle.to_string();
+            state.failed = title.contains("未完成");
+        }
+    }
+
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(windows::Win32::Foundation::HWND(hwnd as *mut _)),
+            windows::Win32::UI::WindowsAndMessaging::WM_APP + 1,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn tick_updater_panel() {
+    if let Some(state) = UPDATER_PANEL_STATE.get() {
+        if let Ok(mut state) = state.lock() {
+            state.animation_tick = state.animation_tick.wrapping_add(1);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn current_updater_step() -> usize {
+    UPDATER_PANEL_STATE
+        .get()
+        .and_then(|state| state.lock().ok().map(|state| state.step))
+        .unwrap_or(1)
+}
+
+#[cfg(target_os = "windows")]
+fn to_wide_null(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+fn updater_panel_position(width: i32, height: i32) -> (i32, i32) {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    let screen_width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+
+    if screen_width > width && screen_height > height {
+        return ((screen_width - width) / 2, (screen_height - height) / 2);
+    }
+
+    (80, 80)
+}
+
+#[cfg(target_os = "windows")]
+fn draw_updater_panel_cutout(hwnd: windows::Win32::Foundation::HWND) {
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::{POINT, RECT, SIZE};
+    use windows::Win32::Graphics::Gdi::{
+        AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
+        CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DT_LEFT, DT_WORDBREAK, DeleteDC,
+        DeleteObject, GetDC, ReleaseDC, SelectObject, SetBkMode, TRANSPARENT,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, ULW_ALPHA, UpdateLayeredWindow,
+    };
+
+    let state = UPDATER_PANEL_STATE
+        .get()
+        .and_then(|state| state.lock().ok().map(|state| state.clone()))
+        .unwrap_or_else(|| UpdaterPanelState {
+            title: "正在安装更新".to_string(),
+            subtitle: "请稍等片刻。".to_string(),
+            step: 1,
+            failed: false,
+            animation_tick: 0,
+        });
+
+    unsafe {
+        let mut client = RECT::default();
+        let _ = GetClientRect(hwnd, &mut client);
+        let width = client.right - client.left;
+        let height = client.bottom - client.top;
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        let bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                biSizeImage: (width * height * 4) as u32,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            ..Default::default()
+        };
+
+        let screen_hdc = GetDC(None);
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let Ok(bitmap) = CreateDIBSection(None, &bitmap_info, DIB_RGB_COLORS, &mut bits, None, 0)
+        else {
+            let _ = ReleaseDC(None, screen_hdc);
+            return;
+        };
+        if bits.is_null() {
+            let _ = DeleteObject(bitmap.into());
+            let _ = ReleaseDC(None, screen_hdc);
+            return;
+        }
+
+        let buffer_len = (width * height * 4) as usize;
+        let buffer = std::slice::from_raw_parts_mut(bits as *mut u8, buffer_len);
+        buffer.fill(0);
+
+        draw_updater_animation_frame(buffer, width, height, &state);
+        draw_updater_bottom_copy(buffer, width, height);
+        let mem_hdc = CreateCompatibleDC(Some(screen_hdc));
+        if mem_hdc.is_invalid() {
+            let _ = DeleteObject(bitmap.into());
+            let _ = ReleaseDC(None, screen_hdc);
+            return;
+        }
+        let old_bitmap = SelectObject(mem_hdc, bitmap.into());
+
+        let status_line = format!("{} - {}", state.title, state.subtitle);
+        let _ = SetBkMode(mem_hdc, TRANSPARENT);
+        draw_text_styled(
+            mem_hdc,
+            &status_line,
+            82,
+            186,
+            486,
+            210,
+            DT_LEFT | DT_WORDBREAK,
+            13,
+            500,
+            windows::Win32::Foundation::COLORREF(0x00705F5A),
+        );
+        restore_gdi_text_alpha(buffer, width, height, 82, 186, 486, 210);
+
+        let mut window_rect = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut window_rect);
+        let destination = POINT {
+            x: window_rect.left,
+            y: window_rect.top,
+        };
+        let size = SIZE {
+            cx: width,
+            cy: height,
+        };
+        let source = POINT { x: 0, y: 0 };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let _ = UpdateLayeredWindow(
+            hwnd,
+            Some(screen_hdc),
+            Some(&destination as *const POINT),
+            Some(&size as *const SIZE),
+            Some(mem_hdc),
+            Some(&source as *const POINT),
+            windows::Win32::Foundation::COLORREF(0),
+            Some(&blend as *const BLENDFUNCTION),
+            ULW_ALPHA,
+        );
+
+        let _ = SelectObject(mem_hdc, old_bitmap);
+        let _ = DeleteDC(mem_hdc);
+        let _ = DeleteObject(bitmap.into());
+        let _ = ReleaseDC(None, screen_hdc);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn draw_updater_animation_frame(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    state: &UpdaterPanelState,
+) {
+    let Some(frames) = updater_construction_frames() else {
+        return;
+    };
+    if frames.is_empty() {
+        return;
+    }
+
+    let frame_index = (state.animation_tick as usize) % frames.len();
+    let frame = &frames[frame_index];
+    let copy_width = width.min(frame.width).max(0) as usize;
+    let copy_height = height.min(frame.height).max(0) as usize;
+    let dst_stride = width as usize * 4;
+    let src_stride = frame.width as usize * 4;
+
+    for y in 0..copy_height {
+        let dst_start = y * dst_stride;
+        let src_start = y * src_stride;
+        let byte_len = copy_width * 4;
+        buffer[dst_start..dst_start + byte_len]
+            .copy_from_slice(&frame.bgra[src_start..src_start + byte_len]);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn draw_updater_bottom_copy(buffer: &mut [u8], width: i32, height: i32) {
+    fill_bgra_rect(buffer, width, height, 72, 186, 512, 224, (58, 63, 75, 220));
+    fill_bgra_rect(
+        buffer,
+        width,
+        height,
+        64,
+        178,
+        504,
+        216,
+        (255, 245, 221, 255),
+    );
+    fill_bgra_rect(
+        buffer,
+        width,
+        height,
+        82,
+        172,
+        132,
+        184,
+        (255, 231, 151, 255),
+    );
+    fill_bgra_rect(
+        buffer,
+        width,
+        height,
+        438,
+        210,
+        488,
+        222,
+        (255, 231, 151, 255),
+    );
+}
+
+#[cfg(target_os = "windows")]
+fn fill_bgra_rect(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    rgba: (u8, u8, u8, u8),
+) {
+    let left = left.clamp(0, width) as usize;
+    let top = top.clamp(0, height) as usize;
+    let right = right.clamp(0, width) as usize;
+    let bottom = bottom.clamp(0, height) as usize;
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    let (r, g, b, a) = rgba;
+    let premultiply = |channel: u8| ((channel as u16 * a as u16 + 127) / 255) as u8;
+    let pixel = [premultiply(b), premultiply(g), premultiply(r), a];
+    let stride = width as usize * 4;
+
+    for y in top..bottom {
+        let row = y * stride;
+        for x in left..right {
+            let index = row + x * 4;
+            buffer[index..index + 4].copy_from_slice(&pixel);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_gdi_text_alpha(
+    buffer: &mut [u8],
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) {
+    let left = left.clamp(0, width) as usize;
+    let top = top.clamp(0, height) as usize;
+    let right = right.clamp(0, width) as usize;
+    let bottom = bottom.clamp(0, height) as usize;
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    let stride = width as usize * 4;
+    for y in top..bottom {
+        let row = y * stride;
+        for x in left..right {
+            let pixel = row + x * 4;
+            // GDI writes the glyph RGB into a 32-bit DIB but clears its alpha byte.
+            if buffer[pixel + 3] == 0
+                && (buffer[pixel] != 0 || buffer[pixel + 1] != 0 || buffer[pixel + 2] != 0)
+            {
+                buffer[pixel + 3] = 255;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn updater_construction_frames() -> Option<&'static [UpdaterAnimationFrame]> {
+    UPDATER_CONSTRUCTION_FRAMES
+        .get_or_init(decode_updater_construction_frames)
+        .as_deref()
+}
+
+#[cfg(target_os = "windows")]
+fn decode_updater_construction_frames() -> Option<Vec<UpdaterAnimationFrame>> {
+    let sheet = image::load_from_memory(updater_construction_frames_bytes())
+        .ok()?
+        .to_rgba8();
+    let (sheet_width, sheet_height) = sheet.dimensions();
+    if sheet_height != 240 || sheet_width < 560 || sheet_width % 560 != 0 {
+        return None;
+    }
+
+    let frame_width = 560;
+    let frame_height = sheet_height;
+    let frame_count = sheet_width / frame_width;
+    let mut decoded = Vec::with_capacity(frame_count as usize);
+
+    for frame_index in 0..frame_count {
+        let mut bgra = Vec::with_capacity((frame_width * frame_height * 4) as usize);
+        let left = frame_index * frame_width;
+        for y in 0..frame_height {
+            for x in 0..frame_width {
+                let [r, g, b, a] = sheet.get_pixel(left + x, y).0;
+                let premultiply = |channel: u8| ((channel as u16 * a as u16 + 127) / 255) as u8;
+                bgra.push(premultiply(b));
+                bgra.push(premultiply(g));
+                bgra.push(premultiply(r));
+                bgra.push(a);
+            }
+        }
+
+        decoded.push(UpdaterAnimationFrame {
+            width: frame_width as i32,
+            height: frame_height as i32,
+            bgra,
+        });
+    }
+
+    Some(decoded)
+}
+
+#[cfg(target_os = "windows")]
+fn updater_construction_frames_bytes() -> &'static [u8] {
+    include_bytes!("../assets/updater-construction-frames.png")
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn draw_text_styled(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    text: &str,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    format: windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT,
+    size: i32,
+    weight: i32,
+    color: windows::Win32::Foundation::COLORREF,
+) {
+    use windows::Win32::Graphics::Gdi::{
+        CLIP_DEFAULT_PRECIS, CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH, DeleteObject,
+        FF_DONTCARE, NONANTIALIASED_QUALITY, OUT_DEFAULT_PRECIS, SelectObject,
+    };
+    use windows::core::PCWSTR;
+
+    let face = to_wide_null(if text.is_ascii() {
+        "Cascadia Mono"
+    } else {
+        "SimSun"
+    });
+    let font = unsafe {
+        CreateFontW(
+            -size,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            NONANTIALIASED_QUALITY,
+            DEFAULT_PITCH.0 as u32 | FF_DONTCARE.0 as u32,
+            PCWSTR(face.as_ptr()),
+        )
+    };
+    let previous_font = unsafe { SelectObject(hdc, font.into()) };
+    let _ = unsafe { windows::Win32::Graphics::Gdi::SetTextColor(hdc, color) };
+    unsafe { draw_text(hdc, text, left, top, right, bottom, format) };
+    let _ = unsafe { SelectObject(hdc, previous_font) };
+    let _ = unsafe { DeleteObject(font.into()) };
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn draw_text(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    text: &str,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    format: windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT,
+) {
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    let mut rect = windows::Win32::Foundation::RECT {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    let _ = unsafe { windows::Win32::Graphics::Gdi::DrawTextW(hdc, &mut wide, &mut rect, format) };
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_parent_exit(parent_pid: u32) {
+    if parent_pid == 0 || parent_pid == std::process::id() {
+        return;
+    }
+
+    for _ in 0..45 {
+        if !is_pid_running(parent_pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_pid_running(pid: u32) -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let filter = format!("PID eq {}", pid);
+    let Ok(output) = Command::new("tasklist")
+        .args(["/FI", &filter, "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    else {
+        return false;
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.contains(&pid.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn stage_installer_for_elevated_run(state: &UpdaterHelperState) -> Result<PathBuf, String> {
+    let staging_dir = crate::sunshine::install_dir().join("updates");
+    fs::create_dir_all(&staging_dir)
+        .map_err(|e| format!("create protected updater directory failed: {}", e))?;
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("get updater staging time failed: {}", e))?
+        .as_nanos();
+    for attempt in 0..10u32 {
+        let staged_path = staging_dir.join(format!(
+            "sunshine-update-{}-{}-{}.exe",
+            std::process::id(),
+            nonce,
+            attempt
+        ));
+        if staged_path.exists() {
+            continue;
+        }
+
+        fs::copy(&state.installer_path, &staged_path)
+            .map_err(|e| format!("stage installer in protected directory failed: {}", e))?;
+        if let Err(error) = validate_download_file_identity(
+            &staged_path,
+            state.expected_size,
+            Some(&state.expected_sha256),
+            Some("windows-x64-installer"),
+        ) {
+            let _ = fs::remove_file(&staged_path);
+            return Err(format!(
+                "protected installer verification failed: {}",
+                error
+            ));
+        }
+        return Ok(staged_path);
+    }
+
+    Err("create unique protected installer path failed".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn run_installer_and_wait(state: &UpdaterHelperState) -> Result<i32, String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    if state.extension != "exe" {
+        return Err("Only Windows Installer .exe files are supported".to_string());
+    }
+    let installer_path = stage_installer_for_elevated_run(state)?;
+    let installer = installer_path.to_string_lossy().to_string();
+
+    let status = Command::new(&installer)
+        .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| format!("start installer failed: {}", e));
+    let _ = fs::remove_file(&installer_path);
+    let status = status?;
+
+    Ok(status.code().unwrap_or(-1))
+}
+
+#[cfg(target_os = "windows")]
+fn write_updater_result(result_path: &str, result: &UpdaterHelperResult) -> Result<(), String> {
+    let result_path = Path::new(result_path);
+    if let Some(parent) = result_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create result dir failed: {}", e))?;
+    }
+
+    let content = serde_json::to_string_pretty(result)
+        .map_err(|e| format!("serialize updater result failed: {}", e))?;
+    fs::write(result_path, content).map_err(|e| format!("write updater result failed: {}", e))
+}
+
+#[cfg(target_os = "windows")]
+fn restart_gui_with_update_result(gui_exe_path: &str, result_path: &str) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    Command::new(gui_exe_path)
+        .args([UPDATE_RESULT_ARG, result_path])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| format!("restart control panel failed: {}", e))?;
+
+    Ok(())
+}
+
+/// 获取上次检查时间
+fn get_last_check_time<R: Runtime>(app: &AppHandle<R>) -> u64 {
+    preferences::last_check_time(app)
+}
+
+/// 保存上次检查时间
+pub(crate) fn save_last_check_time<R: Runtime>(app: &AppHandle<R>) {
+    preferences::save_last_check_time(app);
+}
+
+/// 获取是否包含预发布版本的偏好
+pub(crate) fn get_include_prerelease<R: Runtime>(app: &AppHandle<R>) -> bool {
+    preferences::include_prerelease(app)
+}
+
+/// 设置是否包含预发布版本的偏好
+fn set_include_prerelease<R: Runtime>(app: &AppHandle<R>, include: bool) {
+    preferences::set_include_prerelease(app, include);
+}
+
+/// Tauri命令：获取是否包含预发布版本的偏好
+#[tauri::command]
+pub fn get_include_prerelease_preference(app: AppHandle) -> bool {
+    get_include_prerelease(&app)
+}
+
+/// Tauri命令：设置是否包含预发布版本的偏好
+#[tauri::command]
+pub fn set_include_prerelease_preference(app: AppHandle, include: bool) {
+    set_include_prerelease(&app, include);
+}
+
+/// Tauri 命令：手动检查更新
+#[tauri::command]
+pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let include_prerelease = get_include_prerelease(&app);
+    let result = check_for_updates_internal(true, include_prerelease).await;
+    if result.is_ok() {
+        save_last_check_time(&app);
+    }
+    result
+}
+
+/// Tauri 命令：按首页中用户明确选择的发布通道检查更新。
+///
+/// 该命令不修改侧栏 Beta 偏好；测试版仍同时比较 stable 和 prerelease，
+/// 只保证原生更新器展示的候选与用户选择的通道一致。
+#[tauri::command]
+pub async fn check_for_updates_for_channel(
+    app: AppHandle,
+    channel: String,
+) -> Result<Option<UpdateInfo>, String> {
+    let channel = match channel.as_str() {
+        "stable" => UpdateChannel::StableOnly,
+        "prerelease" => UpdateChannel::StableAndPrerelease,
+        _ => return Err(format!("不支持的更新通道: {channel}")),
+    };
+
+    let result = check_for_updates_in_channel(true, channel).await;
+    if result.is_ok() {
+        save_last_check_time(&app);
+    }
+    result
+}
+
+/// 检查是否需要自动更新
+fn should_auto_check(last_check_time: u64) -> bool {
+    let current_time = get_current_timestamp();
+    current_time.saturating_sub(last_check_time) > UPDATE_CHECK_INTERVAL
+}
+
+/// 处理自动检查结果（`manual=false`，`Some` 必定是新版本）
+fn handle_auto_check_result<R: Runtime>(
+    app: &AppHandle<R>,
+    result: Result<Option<UpdateInfo>, String>,
+) {
+    match result {
+        Ok(Some(update_info)) => {
+            if !crate::desktop_settings::load_desktop_settings_from_disk().update_notify {
+                debug!("Update notification disabled by desktop settings");
+                save_last_check_time(app);
+                return;
+            }
+            info!("🎉 发现新版本: {}", update_info.version);
+            save_last_check_time(app);
+
+            // 发送事件到前端
+            for label in ["main", "desktop"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.emit("update-available", &update_info);
+                }
+            }
+        }
+        Ok(None) => {
+            debug!("✅ 已是最新版本");
+            save_last_check_time(app);
+        }
+        Err(e) => {
+            error!("❌ 检查更新失败: {}", e);
+        }
+    }
+}
+
+/// 启动时自动检查更新（如果距离上次检查超过4小时）
+pub fn check_for_updates_on_startup<R: Runtime + 'static>(app: AppHandle<R>) {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    return;
+
+    let last_check_time = get_last_check_time(&app);
+
+    if !should_auto_check(last_check_time) {
+        debug!("⏰ 距离上次检查时间未超过4小时，跳过自动检查");
+        return;
+    }
+
+    debug!("⏰ 距离上次检查已超过4小时，自动检查更新...");
+    let app_clone = app.clone();
+    let include_prerelease = get_include_prerelease(&app);
+    tauri::async_runtime::spawn(async move {
+        let result = check_for_updates_internal(false, include_prerelease).await;
+        handle_auto_check_result(&app_clone, result);
+    });
+}
+
+// ========== 进程管理 ==========
+
+/// 停止 Windows 服务
+#[cfg(target_os = "windows")]
+fn stop_service_with_command(service_name: &str, command: &str, args: &[&str]) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    match std::process::Command::new(command)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(result) if result.status.success() => {
+            info!("✅ 成功停止服务: {}", service_name);
+            true
+        }
+        Ok(result) => {
+            let error_msg = String::from_utf8_lossy(&result.stderr);
+            warn!("⚠️ 停止服务失败 {}: {}", service_name, error_msg.trim());
+            false
+        }
+        Err(e) => {
+            warn!("⚠️ 执行命令失败 {}: {}", service_name, e);
+            false
+        }
+    }
+}
+
+/// 停止 Windows 服务
+#[cfg(target_os = "windows")]
+fn stop_windows_service(service_name: &str) {
+    // 尝试使用 net stop
+    if stop_service_with_command(service_name, "net", &["stop", service_name]) {
+        return;
+    }
+
+    // 尝试使用 sc stop 作为备选
+    stop_service_with_command(service_name, "sc", &["stop", service_name]);
+}
+
+/// 强制结束进程
+#[cfg(target_os = "windows")]
+fn kill_process(process_name: &str) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = std::process::Command::new("taskkill")
+        .args(&["/IM", process_name, "/F", "/T"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+/// 通过 HTTP API 关闭 Sunshine（不需要管理员权限）
+#[allow(dead_code)]
+async fn stop_sunshine_via_api() -> Result<(), String> {
+    use crate::sunshine;
+
+    let sunshine_url = sunshine::get_sunshine_url().await?;
+    let boom_url = format!("{}/api/boom", sunshine_url.trim_end_matches('/'));
+
+    info!("🌐 尝试通过 HTTP API 关闭 Sunshine: {}", boom_url);
+
+    let client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+    match client.get(&boom_url).send().await {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() || status.as_u16() == 200 {
+                info!("✅ 已通过 HTTP API 请求关闭 Sunshine");
+                Ok(())
+            } else if status.as_u16() == 401 {
+                Err("需要身份验证（401）".to_string())
+            } else {
+                Err(format!("HTTP API 返回错误状态码: {}", status))
+            }
+        }
+        Err(e) => Err(format!("通过 HTTP API 关闭失败: {}", e)),
+    }
+}
+
+/// 停止 Sunshine 服务（使用服务管理器）
+#[cfg(target_os = "windows")]
+fn stop_sunshine_service() {
+    stop_windows_service("SunshineService");
+    stop_windows_service("sunshineservice");
+    std::thread::sleep(Duration::from_secs(2));
+}
+
+/// 强制关闭所有 Sunshine 进程
+#[cfg(target_os = "windows")]
+fn force_kill_sunshine_processes() {
+    kill_process("sunshine.exe");
+
+    let current_pid = std::process::id();
+    let ps_script = format!(
+        "Get-Process -Name '*sunshine*' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne {} }} | Stop-Process -Force",
+        current_pid
+    );
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = std::process::Command::new("powershell")
+        .args(&["-NoProfile", "-Command", &ps_script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    std::thread::sleep(Duration::from_secs(2));
+}
+
+/// 关闭 Sunshine 服务和残留进程
+#[cfg(target_os = "windows")]
+fn stop_sunshine_for_update() {
+    info!("正在关闭 Sunshine 以安装更新...");
+    stop_sunshine_service();
+    force_kill_sunshine_processes();
+    info!("Sunshine 服务和相关进程已为更新关闭。");
+}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+async fn stop_sunshine_and_gui() -> Result<(), String> {
+    info!("🛑 正在关闭Sunshine和GUI进程...");
+
+    // 首先尝试通过 HTTP API 关闭
+    match stop_sunshine_via_api().await {
+        Ok(_) => {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        Err(e) => {
+            warn!("⚠️ {}", e);
+            info!("🔄 回退到使用服务管理器关闭...");
+            stop_sunshine_service();
+        }
+    }
+
+    // 强制结束所有进程
+    force_kill_sunshine_processes();
+
+    info!("✅ Sunshine和GUI进程已关闭");
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn stop_sunshine_and_gui() -> Result<(), String> {
+    Err("此功能仅支持Windows".to_string())
+}
+
+// ========== 下载相关 ==========
+
+fn validate_download_url(url: &str, expected_filename: Option<&str>) -> Result<(), String> {
+    let parsed =
+        reqwest::Url::parse(url).map_err(|error| format!("下载地址格式无效: {}", error))?;
+    if parsed.scheme() != "https"
+        || parsed.port().is_some_and(|port| port != 443)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("下载地址必须是无凭据的 HTTPS 地址".to_string());
+    }
+    let expected_prefix: &[&str] = match parsed.host_str() {
+        Some("github.com") => &["AlkaidLab", "foundation-sunshine", "releases", "download"],
+        Some("cnb.cool") => &[
+            "AlkaidLab",
+            "foundation-sunshine-release",
+            "-",
+            "releases",
+            "download",
+        ],
+        _ => return Err("下载地址不是允许的 Foundation Sunshine Release 地址".to_string()),
+    };
+    let segments = parsed
+        .path_segments()
+        .ok_or_else(|| "下载地址缺少路径".to_string())?
+        .collect::<Vec<_>>();
+    if segments.len() != expected_prefix.len() + 2
+        || !segments
+            .iter()
+            .take(expected_prefix.len())
+            .zip(expected_prefix)
+            .all(|(actual, expected)| *actual == *expected)
+    {
+        return Err("下载地址不是 Foundation Sunshine Release 附件".to_string());
+    }
+    if let Some(expected_filename) = expected_filename {
+        let actual_filename = metadata::decode_segment(segments[expected_prefix.len() + 1])?;
+        if actual_filename != expected_filename {
+            return Err("下载地址的文件名与 metadata 不一致".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_download_filename(filename: &str) -> Result<(), String> {
+    if filename.trim().is_empty() {
+        return Err("下载文件名不能为空".to_string());
+    }
+    if filename.contains('/') || filename.contains('\\') {
+        return Err("下载文件名不能包含路径分隔符".to_string());
+    }
+
+    let mut components = Path::new(filename).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("下载文件名必须是单个普通文件名".to_string());
+    }
+
+    Ok(())
+}
+
+fn download_source_name(url: &str) -> &'static str {
+    match reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
+        .as_deref()
+    {
+        Some("cnb.cool") => "CNB",
+        _ => "GitHub",
+    }
+}
+
+fn normalize_sha256(value: &str) -> Option<String> {
+    let value = value.strip_prefix("sha256:").unwrap_or(value).trim();
+    (value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
+fn validate_download_file_identity(
+    path: &Path,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+    asset_type: Option<&str>,
+) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("读取下载文件失败: {error}"))?;
+    if !metadata.is_file() {
+        return Err("下载结果不是普通文件".to_string());
+    }
+    if let Some(expected_size) = expected_size.filter(|size| *size > 0)
+        && metadata.len() != expected_size
+    {
+        return Err(format!(
+            "文件大小不匹配: expected {expected_size}, got {}",
+            metadata.len()
+        ));
+    }
+
+    let mut file = fs::File::open(path).map_err(|error| format!("打开下载文件失败: {error}"))?;
+    let mut digest = sha2::Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    use std::io::Read;
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("读取下载文件失败: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    if let Some(expected_sha256) = expected_sha256 {
+        let expected_sha256 = normalize_sha256(expected_sha256)
+            .ok_or_else(|| "expected SHA-256 必须是 64 位十六进制字符串".to_string())?;
+        let actual = format!("{:x}", digest.finalize());
+        if actual != expected_sha256 {
+            return Err(format!(
+                "SHA-256 不匹配: expected {expected_sha256}, got {actual}"
+            ));
+        }
+    }
+
+    let mut header = [0u8; 4];
+    let mut header_file =
+        fs::File::open(path).map_err(|error| format!("打开下载文件失败: {error}"))?;
+    let count = header_file
+        .read(&mut header)
+        .map_err(|error| format!("读取文件头失败: {error}"))?;
+    let valid_type = match asset_type {
+        Some("windows-x64-installer") => count >= 2 && &header[..2] == b"MZ",
+        Some("dualsense-sidecar-zip") => count >= 2 && &header[..2] == b"PK",
+        Some("checksum-json") | Some("checksum-text") | None => true,
+        Some(other) => return Err(format!("不支持的下载资产类型: {other}")),
+    };
+    if !valid_type {
+        return Err("下载文件格式与资产类型不匹配".to_string());
+    }
+    Ok(())
+}
+
+fn validate_installer_path(
+    path: &Path,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf, String> {
+    let file = path
+        .canonicalize()
+        .map_err(|error| format!("无法定位安装包: {error}"))?;
+    let temp_path = std::env::temp_dir();
+    let temp_dir = temp_path
+        .canonicalize()
+        .map_err(|error| format!("无法定位临时目录: {error}"))?;
+    if file.parent() != Some(temp_dir.as_path()) {
+        return Err("安装包必须位于临时目录的顶层".to_string());
+    }
+
+    let filename = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "安装包文件名无效".to_string())?;
+    validate_download_filename(filename)?;
+    if !is_supported_installer_filename(filename) {
+        return Err("Panel 只支持 Windows Installer .exe 安装包".to_string());
+    }
+    validate_download_file_identity(
+        &file,
+        expected_size,
+        expected_sha256,
+        Some("windows-x64-installer"),
+    )?;
+    // Keep the validated, normal temp path for the Windows installer. The
+    // canonical path can contain a `\\?\` prefix which older installers do
+    // not consistently accept, while the canonical checks above already
+    // enforce the directory boundary and file identity.
+    Ok(temp_path.join(filename))
+}
+
+/// 发送下载进度事件到前端
+fn emit_download_progress(
+    window: &tauri::WebviewWindow,
+    progress: u32,
+    total: u64,
+    downloaded: u64,
+    phase: DownloadPhase,
+    source: Option<&str>,
+) {
+    let _ = window.emit(
+        "download-progress",
+        serde_json::json!({
+            "progress": progress,
+            "total": total,
+            "downloaded": downloaded,
+            "phase": phase,
+            "source": source
+        }),
+    );
+}
+
+fn emit_install_progress(
+    app_handle: &AppHandle,
+    stage: &str,
+    detail: Option<&str>,
+    terminal: bool,
+) {
+    let _ = app_handle.emit(
+        "install-progress",
+        serde_json::json!({
+            "stage": stage,
+            "detail": detail.unwrap_or(""),
+            "terminal": terminal
+        }),
+    );
+}
+
+fn remove_file_if_exists(
+    path: &Path,
+    error_code: DownloadErrorCode,
+    action: &str,
+) -> Result<(), DownloadCommandError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DownloadCommandError::new(
+            error_code,
+            format!("{}失败: {}", action, error),
+        )),
+    }
+}
+
+async fn finalize_download_file(
+    partial_path: &Path,
+    file_path: &Path,
+) -> Result<(), DownloadCommandError> {
+    remove_file_if_exists(
+        file_path,
+        DownloadErrorCode::FileFinalizationFailed,
+        "替换旧安装包",
+    )?;
+    tokio::fs::rename(partial_path, file_path)
+        .await
+        .map_err(|error| {
+            DownloadCommandError::new(
+                DownloadErrorCode::FileFinalizationFailed,
+                format!("完成下载文件失败: {}", error),
+            )
+        })
+}
+
+/// 下载更新文件（带真实进度报告）
+#[tauri::command]
+pub async fn download_update(
+    url: String,
+    fallback_url: Option<String>,
+    filename: String,
+    expected_size: Option<u64>,
+    expected_sha256: Option<String>,
+    asset_type: Option<String>,
+    app_handle: AppHandle,
+) -> Result<serde_json::Value, DownloadCommandError> {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    if SOFTWARE_UPDATES_DISABLED { return Err(DownloadCommandError::new(DownloadErrorCode::FilePreparationFailed, "此定制版本已禁用软件更新".to_string())); }
+
+    validate_download_url(&url, Some(&filename)).map_err(|detail| {
+        DownloadCommandError::new(DownloadErrorCode::FilePreparationFailed, detail)
+    })?;
+    validate_download_filename(&filename).map_err(|detail| {
+        DownloadCommandError::new(DownloadErrorCode::FilePreparationFailed, detail)
+    })?;
+    if asset_type.as_deref() != Some("windows-x64-installer") {
+        return Err(DownloadCommandError::new(
+            DownloadErrorCode::FilePreparationFailed,
+            "Panel 只支持 Windows Installer 安装包，不下载 Portable 压缩包".to_string(),
+        ));
+    }
+    if !is_supported_installer_filename(&filename) {
+        return Err(DownloadCommandError::new(
+            DownloadErrorCode::FilePreparationFailed,
+            "Panel 只支持 Windows Installer .exe 安装包".to_string(),
+        ));
+    }
+    let expected_sha256 = expected_sha256
+        .as_deref()
+        .and_then(normalize_sha256)
+        .ok_or_else(|| {
+            DownloadCommandError::new(
+                DownloadErrorCode::FilePreparationFailed,
+                "更新 metadata 缺少有效 SHA-256".to_string(),
+            )
+        })?;
+    if let Some(fallback_url) = fallback_url.as_deref() {
+        validate_download_url(fallback_url, Some(&filename)).map_err(|detail| {
+            DownloadCommandError::new(DownloadErrorCode::FilePreparationFailed, detail)
+        })?;
+    }
+
+    info!("📥 开始下载更新: {}", filename);
+
+    cleanup_old_installers();
+
+    let download_dir = std::env::temp_dir();
+    let file_path = download_dir.join(&filename);
+    let partial_path = download_dir.join(format!("{}.part", filename));
+    let window = app_handle.get_webview_window("main");
+
+    // 安装包已完整下载（例如用户在上次确认框点了取消）时直接复用
+    if let Some(cached_path) = find_cached_installer_verified(
+        &filename,
+        expected_size,
+        Some(&expected_sha256),
+        asset_type.as_deref(),
+    ) {
+        info!("♻️ 已存在完整安装包，跳过下载: {}", filename);
+        write_update_cache_marker(
+            &filename,
+            fs::metadata(&cached_path).map(|m| m.len()).unwrap_or(0),
+        );
+        return Ok(serde_json::json!({
+            "success": true,
+            "file_path": cached_path.to_string_lossy().to_string(),
+            "cached": true,
+        }));
+    }
+
+    remove_file_if_exists(
+        &partial_path,
+        DownloadErrorCode::FilePreparationFailed,
+        "清理旧的临时下载文件",
+    )?;
+
+    let mut candidates = vec![github_download::DownloadCandidate {
+        name: download_source_name(&url),
+        url: url.clone(),
+    }];
+    if let Some(fallback_url) = fallback_url {
+        if !candidates
+            .iter()
+            .any(|candidate| candidate.url == fallback_url)
+        {
+            candidates.push(github_download::DownloadCandidate {
+                name: download_source_name(&fallback_url),
+                url: fallback_url,
+            });
+        }
+    }
+
+    let mut last_progress_percent = 0;
+    let outcome = github_download::download_to_file_from_candidates(
+        DownloadRequest {
+            url: &url,
+            destination: &partial_path,
+            expected_size: expected_size.filter(|size| *size > 0),
+            expected_sha256: Some(&expected_sha256),
+            max_size: expected_size.filter(|size| *size > 0),
+            user_agent: "Sunshine-Control-Panel updater",
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            response_timeout: DEFAULT_RESPONSE_TIMEOUT,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            overall_timeout: Some(Duration::from_secs(30 * 60)),
+        },
+        &candidates,
+        |event| {
+            let Some(win) = window.as_ref() else {
+                return;
+            };
+            match event.phase {
+                DownloadAttemptPhase::Connecting => {
+                    last_progress_percent = 0;
+                    emit_download_progress(win, 0, event.total, 0, DownloadPhase::Connecting, None);
+                }
+                DownloadAttemptPhase::Retrying => {
+                    last_progress_percent = 0;
+                    emit_download_progress(win, 0, event.total, 0, DownloadPhase::Retrying, None);
+                }
+                DownloadAttemptPhase::Downloading => {
+                    let progress = if event.total == 0 {
+                        0
+                    } else {
+                        (event.downloaded.saturating_mul(100) / event.total).min(99) as u32
+                    };
+                    if event.total == 0 || progress > last_progress_percent || event.downloaded == 0
+                    {
+                        last_progress_percent = progress;
+                        emit_download_progress(
+                            win,
+                            progress,
+                            event.total,
+                            event.downloaded,
+                            DownloadPhase::Downloading,
+                            Some(event.source),
+                        );
+                    }
+                }
+            }
+        },
+    )
+    .await
+    .map_err(|error| {
+        let code = if error.is_setup() {
+            DownloadErrorCode::SetupFailed
+        } else {
+            DownloadErrorCode::SourcesExhausted
+        };
+        DownloadCommandError::new(code, error.to_string())
+    })?;
+
+    if let Err(error) = validate_download_file_identity(
+        &partial_path,
+        expected_size,
+        Some(&expected_sha256),
+        asset_type.as_deref(),
+    ) {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return Err(DownloadCommandError::new(
+            DownloadErrorCode::SourcesExhausted,
+            error,
+        ));
+    }
+
+    if let Some(ref win) = window {
+        emit_download_progress(
+            win,
+            99,
+            outcome.total,
+            outcome.downloaded,
+            DownloadPhase::Verifying,
+            Some(outcome.source),
+        );
+    }
+    if let Err(error) = finalize_download_file(&partial_path, &file_path).await {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return Err(error);
+    }
+
+    // 记录缓存标记：即使本次安装被取消，重启或下次检查时也可直接复用
+    write_update_cache_marker(
+        &filename,
+        fs::metadata(&file_path)
+            .map(|m| m.len())
+            .unwrap_or(outcome.downloaded),
+    );
+
+    info!(
+        "✅ 下载完成: {} bytes，来源: {}",
+        outcome.downloaded, outcome.source
+    );
+    if let Some(win) = window {
+        emit_download_progress(
+            &win,
+            100,
+            outcome.total,
+            outcome.downloaded,
+            DownloadPhase::Complete,
+            Some(outcome.source),
+        );
+    }
+    Ok(serde_json::json!({
+        "success": true,
+        "file_path": file_path.to_string_lossy().to_string(),
+        "source": outcome.source
+    }))
+}
+
+/// 查询更新安装包是否已在 temp 目录中完整下载（未命中返回 `None`）。
+#[tauri::command]
+pub fn check_cached_update(
+    filename: String,
+    expected_size: Option<u64>,
+    expected_sha256: Option<String>,
+    asset_type: Option<String>,
+) -> Option<String> {
+    if asset_type.as_deref() != Some("windows-x64-installer") {
+        return None;
+    }
+    if !is_supported_installer_filename(&filename) {
+        return None;
+    }
+    find_cached_installer_verified(
+        &filename,
+        expected_size,
+        expected_sha256.as_deref(),
+        asset_type.as_deref(),
+    )
+    .map(|path| path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod download_source_tests {
+    use super::*;
+
+    #[test]
+    fn download_url_requires_an_allowlisted_foundation_release_host() {
+        assert!(
+            validate_download_url(
+                "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+                None,
+            )
+            .is_ok()
+        );
+        assert!(validate_download_url(
+            "https://cnb.cool/AlkaidLab/foundation-sunshine-release/-/releases/download/v1/setup.exe",
+            None,
+        )
+        .is_ok());
+
+        for invalid_url in [
+            "http://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+            "https://github.com.example.invalid/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+            "https://github.com/AlkaidLab/other/releases/download/v1/setup.exe",
+            "https://user:secret@github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+            "not a url",
+        ] {
+            assert!(
+                validate_download_url(invalid_url, None).is_err(),
+                "unexpectedly accepted {invalid_url}"
+            );
+        }
+
+        assert!(
+            validate_download_url(
+                "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/setup.exe",
+                Some("setup.exe"),
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_download_url(
+                "https://github.com/AlkaidLab/foundation-sunshine/releases/download/v1/other.exe",
+                Some("setup.exe"),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn installer_path_is_limited_to_a_valid_temp_file() {
+        let temp_dir = std::env::temp_dir();
+        let filename = format!("sunshine-installer-path-test-{}.exe", std::process::id());
+        let file = temp_dir.join(&filename);
+        let nested_dir = temp_dir.join(format!(
+            "sunshine-installer-path-test-{}",
+            std::process::id()
+        ));
+        let nested_file = nested_dir.join(&filename);
+        let _ = fs::remove_file(&file);
+        let _ = fs::remove_dir_all(&nested_dir);
+
+        fs::write(&file, b"MZtest").unwrap();
+        fs::create_dir(&nested_dir).unwrap();
+        fs::write(&nested_file, b"MZtest").unwrap();
+
+        assert_eq!(validate_installer_path(&file, None, None).unwrap(), file);
+        assert!(validate_installer_path(&nested_file, None, None).is_err());
+
+        let expected_sha256 = format!("{:x}", sha2::Sha256::digest(b"MZtest"));
+        assert_eq!(
+            validate_installer_path(&file, Some(6), Some(&expected_sha256)).unwrap(),
+            file
+        );
+        assert!(validate_installer_path(&file, Some(6), Some(&"0".repeat(64))).is_err());
+
+        let _ = fs::remove_file(&file);
+        let _ = fs::remove_dir_all(&nested_dir);
+    }
+
+    #[test]
+    fn test_channel_falls_back_when_newer_candidate_has_no_compatible_asset() {
+        let asset_type = preferred_asset_type().to_string();
+        let latest = ReleaseCandidate {
+            version: "v2026.925.152547.杂鱼".to_string(),
+            prerelease: false,
+            github_release_id: Some(10),
+            published_at: None,
+            release_notes: String::new(),
+            release_page: String::new(),
+            assets: vec![ReleaseAsset {
+                asset_type,
+                name: "Sunshine-update.exe".to_string(),
+                size: 1,
+                sha256: "a".repeat(64),
+                url: String::new(),
+                fallback_url: None,
+            }],
+        };
+        let pre_latest = ReleaseCandidate {
+            version: "v2026.1001.112543.杂鱼".to_string(),
+            prerelease: true,
+            github_release_id: Some(11),
+            ..latest.clone()
+        };
+        let mut pre_without_asset = pre_latest;
+        pre_without_asset.assets.clear();
+        let catalog = ReleaseCatalog {
+            latest: Some(latest),
+            pre_latest: Some(pre_without_asset),
+        };
+
+        let selected =
+            select_compatible_candidate(&catalog, UpdateChannel::StableAndPrerelease).unwrap();
+        assert!(!selected.prerelease);
+    }
+
+    #[test]
+    fn download_filename_must_be_a_single_normal_component() {
+        for valid_filename in ["Sunshine-Windows-1.2.3.exe", "archive..exe"] {
+            assert!(
+                validate_download_filename(valid_filename).is_ok(),
+                "unexpectedly rejected {valid_filename}"
+            );
+        }
+
+        for invalid_filename in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "../setup.exe",
+            "..\\setup.exe",
+            "folder/setup.exe",
+            "folder\\setup.exe",
+        ] {
+            assert!(
+                validate_download_filename(invalid_filename).is_err(),
+                "unexpectedly accepted {invalid_filename}"
+            );
+        }
+    }
+
+    #[test]
+    fn download_errors_expose_stable_language_neutral_codes() {
+        let error = DownloadCommandError::new(
+            DownloadErrorCode::SourcesExhausted,
+            "diagnostic details stay out of the localized UI",
+        );
+        let serialized = serde_json::to_value(error).unwrap();
+
+        assert_eq!(serialized["code"], "sources_exhausted");
+        assert_eq!(
+            serialized["detail"],
+            "diagnostic details stay out of the localized UI"
+        );
+    }
+}
+
+#[cfg(test)]
+mod update_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_installer_reuse_and_marker_roundtrip() {
+        let filename = format!("sunshine-cache-test-{}.exe", std::process::id());
+        let file_path = std::env::temp_dir().join(&filename);
+        let _ = fs::remove_file(&file_path);
+        let _ = fs::remove_file(update_cache_marker_path());
+
+        // 文件不存在时不应命中
+        assert!(find_cached_installer(&filename, Some(123)).is_none());
+
+        fs::write(&file_path, b"payload-payload").unwrap();
+        let size = fs::metadata(&file_path).unwrap().len();
+
+        // 大小一致才复用
+        assert!(find_cached_installer(&filename, Some(size)).is_some());
+        assert!(find_cached_installer(&filename, Some(size + 1)).is_none());
+
+        // 同名且同大小但内容变化时，SHA-256 不匹配，不能复用旧缓存。
+        fs::write(&file_path, b"MZold").unwrap();
+        let content_size = 5;
+        let old_sha256 = format!("{:x}", sha2::Sha256::digest(b"MZold"));
+        let new_sha256 = format!("{:x}", sha2::Sha256::digest(b"MZnew"));
+        assert!(
+            find_cached_installer_verified(
+                &filename,
+                Some(content_size),
+                Some(&old_sha256),
+                Some("windows-x64-installer"),
+            )
+            .is_some()
+        );
+        fs::write(&file_path, b"MZnew").unwrap();
+        assert!(
+            find_cached_installer_verified(
+                &filename,
+                Some(content_size),
+                Some(&old_sha256),
+                Some("windows-x64-installer"),
+            )
+            .is_none()
+        );
+        assert!(!file_path.exists(), "SHA-256 不匹配的缓存应被删除");
+        fs::write(&file_path, b"MZnew").unwrap();
+        assert!(
+            find_cached_installer_verified(
+                &filename,
+                Some(content_size),
+                Some(&new_sha256),
+                Some("windows-x64-installer"),
+            )
+            .is_some()
+        );
+        fs::write(&file_path, b"payload-payload").unwrap();
+
+        // 期望大小缺省（或为 0）时回退到缓存标记
+        write_update_cache_marker(&filename, size);
+        assert!(find_cached_installer(&filename, None).is_some());
+        assert!(find_cached_installer(&filename, Some(0)).is_some());
+
+        // 非法文件名始终不命中
+        assert!(find_cached_installer("../escape.exe", Some(size)).is_none());
+
+        write_update_cache_marker("Sunshine-1.2.3.exe", 42);
+        let marker = read_update_cache_marker().unwrap();
+        assert_eq!(marker.filename, "Sunshine-1.2.3.exe");
+        assert_eq!(marker.size, 42);
+
+        // 损坏的标记文件按未命中处理
+        fs::write(update_cache_marker_path(), "not json").unwrap();
+        assert!(read_update_cache_marker().is_none());
+        assert!(find_cached_installer(&filename, None).is_none());
+
+        // 标记大小回退路径同样受保留期约束；调用方传入的期望值不受影响
+        let stale = CachedInstallerMarker {
+            filename: filename.clone(),
+            size,
+            downloaded_at: get_current_timestamp() - UPDATE_CACHE_MAX_AGE_SECS - 60,
+        };
+        fs::write(
+            update_cache_marker_path(),
+            serde_json::to_string(&stale).unwrap(),
+        )
+        .unwrap();
+        assert!(find_cached_installer(&filename, None).is_none());
+        assert!(find_cached_installer(&filename, Some(size)).is_some());
+
+        // 清理保护判定：过期标记 → 安装包与标记一并清除
+        let cleanup_dir =
+            std::env::temp_dir().join(format!("sunshine-cache-test-dir-{}", std::process::id()));
+        fs::create_dir_all(&cleanup_dir).unwrap();
+        let cached_installer = cleanup_dir.join(&filename);
+        fs::write(&cached_installer, b"payload").unwrap();
+
+        assert!(protected_installer_for_cleanup(&cleanup_dir).is_none());
+        assert!(!cached_installer.exists(), "过期安装包应被删除");
+        assert!(read_update_cache_marker().is_none(), "过期标记应被删除");
+
+        // 有效标记 → 返回受保护的文件名
+        fs::write(&cached_installer, b"payload").unwrap();
+        write_update_cache_marker(&filename, size);
+        assert_eq!(
+            protected_installer_for_cleanup(&cleanup_dir).as_deref(),
+            Some(filename.as_str())
+        );
+
+        // 非法文件名的标记 → 标记被清除且不保护任何路径
+        write_update_cache_marker("../escape.exe", size);
+        assert!(protected_installer_for_cleanup(&cleanup_dir).is_none());
+        assert!(read_update_cache_marker().is_none());
+
+        // 标记指向的文件丢失 → 标记被清除
+        write_update_cache_marker(&filename, size);
+        let _ = fs::remove_file(&cached_installer);
+        assert!(protected_installer_for_cleanup(&cleanup_dir).is_none());
+        assert!(read_update_cache_marker().is_none());
+
+        // 时钟回拨（downloaded_at 晚于当前时间）按过期处理：
+        // 标记大小不参与回退，清理也不持续保护
+        fs::write(&cached_installer, b"payload").unwrap();
+        let future = CachedInstallerMarker {
+            filename: filename.clone(),
+            size,
+            downloaded_at: get_current_timestamp() + 3600,
+        };
+        fs::write(
+            update_cache_marker_path(),
+            serde_json::to_string(&future).unwrap(),
+        )
+        .unwrap();
+        assert!(find_cached_installer(&filename, None).is_none());
+        // 调用方期望值路径不读标记，不受未来时间戳影响
+        assert!(find_cached_installer(&filename, Some(size)).is_some());
+        assert!(protected_installer_for_cleanup(&cleanup_dir).is_none());
+        assert!(!cached_installer.exists());
+        assert!(read_update_cache_marker().is_none());
+
+        let _ = fs::remove_dir_all(&cleanup_dir);
+        let _ = fs::remove_file(&file_path);
+        let _ = fs::remove_file(update_cache_marker_path());
+    }
+}
+
+// ========== 安装相关 ==========
+
+#[cfg(target_os = "windows")]
+fn create_updater_work_dir() -> Result<PathBuf, String> {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let temp_dir = std::env::temp_dir();
+    for attempt in 0..100 {
+        let work_dir = temp_dir.join(format!(
+            "sunshine-updater-{}-{}-{}",
+            now_ms,
+            std::process::id(),
+            attempt
+        ));
+        match fs::create_dir(&work_dir) {
+            Ok(()) => return Ok(work_dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create updater dir failed: {}", e)),
+        }
+    }
+
+    Err("create updater dir failed: too many name collisions".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_updater_helper(
+    file_path: &str,
+    extension: &str,
+    expected_size: Option<u64>,
+    expected_sha256: &str,
+    target_version: Option<String>,
+) -> Result<(PathBuf, PathBuf, UpdaterHelperState), String> {
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("get current exe failed: {}", e))?;
+    let work_dir = create_updater_work_dir()?;
+
+    // The helper is the installed GUI executable itself. Keeping the elevated
+    // entry point outside the user-writable temp directory prevents a medium
+    // integrity process from replacing the helper before UAC approval.
+    let helper_exe = current_exe.clone();
+
+    let state_path = work_dir.join("state.json");
+    let result_path = work_dir.join("result.json");
+    let state = UpdaterHelperState {
+        installer_path: file_path.to_string(),
+        extension: extension.to_string(),
+        expected_size,
+        expected_sha256: expected_sha256.to_string(),
+        target_version,
+        gui_exe_path: current_exe.to_string_lossy().to_string(),
+        result_path: result_path.to_string_lossy().to_string(),
+        parent_pid: std::process::id(),
+    };
+
+    let state_content = serde_json::to_string_pretty(&state)
+        .map_err(|e| format!("serialize updater state failed: {}", e))?;
+    fs::write(&state_path, state_content)
+        .map_err(|e| format!("write updater state failed: {}", e))?;
+
+    Ok((helper_exe, state_path, state))
+}
+
+#[cfg(target_os = "windows")]
+fn launch_updater_helper(
+    helper_exe: &Path,
+    state_path: &Path,
+    state: &UpdaterHelperState,
+) -> Result<(), String> {
+    launch_updater_helper_elevated(helper_exe, state_path, state)
+}
+
+#[cfg(target_os = "windows")]
+fn launch_updater_helper_elevated(
+    helper_exe: &Path,
+    state_path: &Path,
+    state: &UpdaterHelperState,
+) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Shell::{SHELLEXECUTEINFOW, ShellExecuteExW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::PCWSTR;
+
+    let verb = to_wide_null("runas");
+    let file = to_wide_null(&helper_exe.to_string_lossy());
+    let expected_size = state
+        .expected_size
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let params = to_wide_null(&format!(
+        "{} \"{}\" \"{}\" \"{}\" \"{}\" \"{}\" \"{}\"",
+        UPDATER_HELPER_ARG,
+        state_path.to_string_lossy(),
+        state.installer_path,
+        expected_size,
+        state.expected_sha256,
+        state.gui_exe_path,
+        state.result_path,
+    ));
+    let directory = helper_exe
+        .parent()
+        .map(|path| to_wide_null(&path.to_string_lossy()))
+        .unwrap_or_else(|| to_wide_null(""));
+
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        hwnd: HWND(std::ptr::null_mut()),
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        lpDirectory: PCWSTR(directory.as_ptr()),
+        // Keep the pixel progress helper visible after UAC approval.
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+
+    unsafe { ShellExecuteExW(&mut info) }
+        .map_err(|e| format!("launch updater helper elevated failed: {}", e))
+}
+
+/// 安装更新文件
+#[tauri::command]
+pub async fn install_update(
+    file_path: String,
+    target_version: Option<String>,
+    expected_size: Option<u64>,
+    expected_sha256: Option<String>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    if SOFTWARE_UPDATES_DISABLED { return Err("此定制版本已禁用软件更新".to_string()); }
+
+    #[cfg(target_os = "windows")]
+    {
+        info!("🔧 开始安装更新: {}", file_path);
+
+        // 先启动更新助手；如果用户取消 UAC，串流仍然保持运行。
+        emit_install_progress(&app_handle, "preparing", None, false);
+        let expected_sha256 = match expected_sha256.as_deref().and_then(normalize_sha256) {
+            Some(value) => value,
+            None => {
+                let error = "安装前缺少有效的更新 SHA-256".to_string();
+                emit_install_progress(&app_handle, "failed", Some(&error), true);
+                return Err(error);
+            }
+        };
+        let path = match validate_installer_path(
+            Path::new(&file_path),
+            expected_size,
+            Some(&expected_sha256),
+        ) {
+            Ok(path) => path,
+            Err(error) => {
+                emit_install_progress(&app_handle, "failed", Some(&error), true);
+                return Err(error);
+            }
+        };
+        let extension = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        emit_install_progress(&app_handle, "building-command", None, false);
+        let (helper_exe, state_path, state) = match prepare_updater_helper(
+            &path.to_string_lossy(),
+            &extension,
+            expected_size,
+            &expected_sha256,
+            target_version,
+        ) {
+            Ok(paths) => paths,
+            Err(e) => {
+                emit_install_progress(&app_handle, "failed", Some(&e), true);
+                return Err(e);
+            }
+        };
+
+        emit_install_progress(&app_handle, "launching-installer", None, false);
+        if let Err(e) = launch_updater_helper(&helper_exe, &state_path, &state) {
+            emit_install_progress(&app_handle, "failed", Some(&e), true);
+            return Err(e);
+        }
+        emit_install_progress(&app_handle, "installer-started", None, false);
+
+        info!("✅ 安装程序已静默启动，正在安装...");
+
+        // 延迟后退出当前GUI进程
+        let app_clone = app_handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            emit_install_progress(&app_clone, "app-exiting", None, false);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            app_clone.exit(0);
+        });
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("此功能仅支持Windows".to_string())
+    }
+}
+
+fn update_cache_marker_path() -> PathBuf {
+    std::env::temp_dir().join(UPDATE_CACHE_MARKER_FILE)
+}
+
+fn read_update_cache_marker() -> Option<CachedInstallerMarker> {
+    let raw = fs::read_to_string(update_cache_marker_path()).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_update_cache_marker(filename: &str, size: u64) {
+    let marker = CachedInstallerMarker {
+        filename: filename.to_string(),
+        size,
+        downloaded_at: get_current_timestamp(),
+    };
+    let raw = match serde_json::to_string(&marker) {
+        Ok(raw) => raw,
+        Err(e) => {
+            warn!("⚠️ 序列化更新缓存标记失败: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = fs::write(update_cache_marker_path(), raw) {
+        warn!("⚠️ 写入更新缓存标记失败: {}", e);
+    }
+}
+
+/// 决定本次清理应保护的安装包，返回其文件名。
+///
+/// 标记文件位于 temp 目录、内容不完全受我们控制，因此文件名必须先通过
+/// `validate_download_filename` 才能据此拼路径或删除文件；标记非法、
+/// 过期或指向的文件已丢失时解除保护并清掉标记本身。
+fn protected_installer_for_cleanup(temp_dir: &Path) -> Option<String> {
+    let marker = read_update_cache_marker()?;
+
+    if validate_download_filename(&marker.filename).is_err() {
+        let _ = fs::remove_file(update_cache_marker_path());
+        return None;
+    }
+
+    let cached_path = temp_dir.join(&marker.filename);
+    // 时钟回拨（downloaded_at 晚于当前时间）按过期处理，不无限期保护
+    let expired = get_current_timestamp()
+        .checked_sub(marker.downloaded_at)
+        .map_or(true, |age| age > UPDATE_CACHE_MAX_AGE_SECS);
+    if expired || !cached_path.exists() {
+        let _ = fs::remove_file(&cached_path);
+        let _ = fs::remove_file(update_cache_marker_path());
+        return None;
+    }
+
+    Some(marker.filename)
+}
+
+/// 返回已完整下载且大小一致的安装包路径，命中时无需重新下载。
+///
+/// 大小以调用方传入的期望值为准——它来自当前这次更新检查，天然新鲜；
+/// 缺省时回退到缓存标记中记录的大小，此时与清理逻辑同样受保留期约束。
+/// 无法确定期望大小时保守地视为未命中。
+fn find_cached_installer(filename: &str, expected_size: Option<u64>) -> Option<PathBuf> {
+    if validate_download_filename(filename).is_err() {
+        return None;
+    }
+
+    let expected = expected_size.filter(|size| *size > 0).or_else(|| {
+        // 标记大小仅作回退，过期后不再据此复用
+        let marker = read_update_cache_marker()?;
+        let fresh = get_current_timestamp()
+            .checked_sub(marker.downloaded_at)
+            .is_some_and(|age| age <= UPDATE_CACHE_MAX_AGE_SECS);
+        (fresh && marker.filename == filename).then_some(marker.size)
+    })?;
+    let file_path = std::env::temp_dir().join(filename);
+    let actual = fs::metadata(&file_path).ok()?.len();
+
+    (actual == expected).then_some(file_path)
+}
+
+fn find_cached_installer_verified(
+    filename: &str,
+    expected_size: Option<u64>,
+    expected_sha256: Option<&str>,
+    asset_type: Option<&str>,
+) -> Option<PathBuf> {
+    // A cached file must be checked against the current release identity. A
+    // size-only match is not sufficient because two releases may reuse a
+    // filename and have the same byte length.
+    let expected_sha256 = normalize_sha256(expected_sha256?)?;
+    let path = find_cached_installer(filename, expected_size)?;
+    if validate_download_file_identity(&path, expected_size, Some(&expected_sha256), asset_type)
+        .is_ok()
+    {
+        return Some(path);
+    }
+    let _ = fs::remove_file(&path);
+    None
+}
+
+/// 清理临时目录中的旧安装包
+fn cleanup_old_installers() {
+    let temp_dir = std::env::temp_dir();
+
+    // 用户取消安装后保留已下载的安装包，避免下次被迫重新下载；
+    // 标记非法、过期或文件已丢失时解除保护。
+    let protected = protected_installer_for_cleanup(&temp_dir);
+
+    info!("🧹 检查并清理临时目录中的旧安装包...");
+
+    let entries = match std::fs::read_dir(&temp_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            warn!("⚠️ 无法读取临时目录: {}", e);
+            return;
+        }
+    };
+
+    let cleaned_count = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?.to_lowercase();
+
+            if !matches!(ext.as_str(), "msi" | "exe") {
+                return None;
+            }
+
+            let file_name = path.file_name()?.to_str()?;
+
+            // 已下载待安装的安装包不清理
+            if protected.as_deref() == Some(file_name) {
+                return None;
+            }
+
+            let file_name_lower = file_name.to_lowercase();
+
+            // 检查是否包含 sunshine 相关关键词
+            let is_sunshine_installer =
+                file_name_lower.contains("sunshine") || file_name_lower.starts_with("sunshine-");
+
+            if !is_sunshine_installer {
+                return None;
+            }
+
+            match std::fs::remove_file(&path) {
+                Ok(_) => {
+                    info!("✅ 已删除旧安装包: {}", file_name);
+                    Some(())
+                }
+                Err(e) => {
+                    debug!("⚠️ 无法删除 {}: {} (可能正在使用中)", file_name, e);
+                    None
+                }
+            }
+        })
+        .count();
+
+    if cleaned_count > 0 {
+        info!("✅ 清理完成，共删除 {} 个旧安装包", cleaned_count);
+    } else {
+        debug!("✅ 未发现需要清理的旧安装包");
+    }
+}
+
+/// 初始化更新偏好状态。
+///
+/// 必须在任何窗口或异步更新任务启动前调用，不能依赖主 WebView 是否在启动时创建。
+pub fn init_update_preferences(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    preferences::init(app)
+}
+
+/// 启动清理和自动更新检查；偏好状态由 `init_update_preferences` 独立初始化。
+pub fn start_update_checker<R: Runtime + 'static>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Custom distribution: never replace patched binaries with upstream releases.
+    if SOFTWARE_UPDATES_DISABLED { return Ok(()); }
+
+    if UPDATE_CHECKER_STARTED.set(()).is_err() {
+        debug!("更新检查器已启动，跳过重复初始化");
+        return Ok(());
+    }
+
+    // 在启动时清理旧的安装包（在检查更新之前）
+    cleanup_old_installers();
+
+    // 延迟自动检查更新：主要是等待主窗口/前端就绪（偏好已在后端启动时加载）
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        check_for_updates_on_startup(app_clone);
+    });
+
+    Ok(())
+}
+
+/// 主窗口按需创建并完成事件监听后启动自动检查。
+#[tauri::command]
+pub fn start_update_checker_when_ui_ready(app: tauri::AppHandle) -> Result<(), String> {
+    start_update_checker(&app).map_err(|error| error.to_string())
+}

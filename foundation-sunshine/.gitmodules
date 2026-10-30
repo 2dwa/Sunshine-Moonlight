@@ -1,0 +1,87 @@
+[submodule "third-party/build-deps"]
+	path = third-party/build-deps
+	url = https://github.com/AlkaidLab/foundation-build-deps.git
+	branch = dist
+[submodule "third-party/doxyconfig"]
+	path = third-party/doxyconfig
+	url = https://github.com/LizardByte/doxyconfig.git
+	branch = master
+[submodule "third-party/googletest"]
+	path = third-party/googletest
+	url = https://github.com/google/googletest.git
+	branch = main
+[submodule "third-party/inputtino"]
+	path = third-party/inputtino
+	url = https://github.com/games-on-whales/inputtino.git
+	branch = stable
+[submodule "third-party/moonlight-common-c"]
+	path = third-party/moonlight-common-c
+	url = https://github.com/qiin2333/moonlight-common-c.git
+	branch = mic
+[submodule "third-party/nanors"]
+	path = third-party/nanors
+	url = https://github.com/sleepybishop/nanors.git
+	branch = master
+[submodule "third-party/nvenc-headers/1100"]
+	path = third-party/nvenc-headers/1100
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+	branch = sdk/11.0
+[submodule "third-party/nvenc-headers/1200"]
+	path = third-party/nvenc-headers/1200
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+	branch = sdk/12.0
+# Keep each NVENC API line as a separate, pinned gitlink. A newer API line can
+# raise the minimum driver requirement and must not replace an older fallback.
+[submodule "third-party/nvenc-headers/1300"]
+	path = third-party/nvenc-headers/1300
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "third-party/nvenc-headers/1301"]
+	path = third-party/nvenc-headers/1301
+	url = https://github.com/FFmpeg/nv-codec-headers.git
+[submodule "third-party/AMF"]
+	path = third-party/AMF
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+	branch = v1.5.2
+	shallow = true
+	# Headers-only consumption (we only need amf/public/include/).
+	# After clone, run:
+	#   git -C third-party/AMF sparse-checkout init --cone
+	#   git -C third-party/AMF sparse-checkout set amf/public/include
+	# To upgrade: edit branch above, then `git submodule update --remote third-party/AMF`.
+	# AMF headers are backward-compatible; single version is sufficient.
+[submodule "third-party/nvapi"]
+	path = third-party/nvapi
+	url = https://github.com/NVIDIA/nvapi.git
+	branch = main
+[submodule "third-party/TPCircularBuffer"]
+	path = third-party/TPCircularBuffer
+	url = https://github.com/michaeltyson/TPCircularBuffer.git
+	branch = master
+[submodule "third-party/tray"]
+	path = third-party/tray
+	url = https://github.com/LizardByte/tray.git
+	branch = master
+[submodule "third-party/ViGEmClient"]
+	path = third-party/ViGEmClient
+	url = https://github.com/LizardByte/Virtual-Gamepad-Emulation-Client.git
+	branch = master
+[submodule "third-party/wayland-protocols"]
+	path = third-party/wayland-protocols
+	url = https://github.com/LizardByte-infrastructure/wayland-protocols.git
+	branch = main
+[submodule "third-party/wlr-protocols"]
+	path = third-party/wlr-protocols
+	url = https://gitlab.freedesktop.org/wlroots/wlr-protocols.git
+	branch = master
+[submodule "src_assets/common/sunshine-control-panel"]
+	path = src_assets/common/sunshine-control-panel
+	url = https://github.com/qiin2333/sunshine-control-panel.git
+	branch = main
+[submodule "third-party/moonlight-audio-haptics"]
+	path = third-party/moonlight-audio-haptics
+	url = https://github.com/AlkaidLab/moonlight-audio-haptics.git
+	branch = main
+[submodule "third-party/pyrowave"]
+	path = third-party/pyrowave
+	url = https://github.com/AlkaidLab/pyrowave.git
+	branch = master

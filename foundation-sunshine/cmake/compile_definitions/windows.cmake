@@ -1,0 +1,260 @@
+# windows specific compile definitions
+
+add_compile_definitions(SUNSHINE_PLATFORM="windows")
+
+enable_language(RC)
+
+# gcc complains about misleading indentation in some mingw includes
+list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-misleading-indentation)
+
+# gcc15 complains about non-template type 'coroutine_handle' used as a template in Windows.Foundation.h
+# can remove after https://gcc.gnu.org/bugzilla/show_bug.cgi?id=120495 is available in mingw-w64
+list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-template-body)
+
+# Template-heavy translation units (confighttp.cpp in particular) exceed the
+# 32767-section COFF limit. Without big-obj the assembler silently writes a
+# corrupt symbol table whose COMDAT entries (typeinfo, inline members) then
+# resolve as undefined at link time.
+#
+# Gated on GNU unlike the -Wno-* flags above: clang only warns about an unknown
+# -Wno-*, but rejects an unknown -Wa, argument outright, so an unconditional
+# flag here would hard-fail a clang-based MinGW build (e.g. MSYS2 CLANG64).
+# A plain if() rather than a COMPILE_LANG_AND_ID genex, because
+# cmake/targets/common.cmake wraps every SUNSHINE_COMPILE_OPTIONS entry as
+# --compiler-options=<flag> for CUDA, and a genex there would degrade to a bare
+# --compiler-options= for CUDA translation units.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Wa,-mbig-obj)
+endif()
+
+# see gcc bug 98723
+add_definitions(-DUSE_BOOST_REGEX)
+
+# Fix for GCC 15 C++20 coroutine compatibility with WinRT
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
+    # Add compiler flags to handle WinRT coroutine issues with GCC 15
+    list(APPEND SUNSHINE_COMPILE_OPTIONS -Wno-template-body)
+    add_definitions(-DWINRT_LEAN_AND_MEAN)
+    # Force using experimental coroutine ABI for compatibility
+    add_definitions(-D_ALLOW_COROUTINE_ABI_MISMATCH)
+endif()
+
+# extra tools/binaries for audio/display devices
+add_subdirectory(tools)  # todo - this is temporary, only tools for Windows are needed, for now
+
+# nvidia
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nvapi")
+file(GLOB NVPREFS_FILES CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/third-party/nvapi/*.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/nvprefs/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/nvprefs/*.h")
+
+# Keep every supported NVENC API line independently pinned. NVIDIA can raise
+# the minimum driver requirement in a minor SDK release, so updating one
+# directory in-place must never silently change the runtime compatibility tier.
+set(NVENC_SDK_MANIFEST "${CMAKE_SOURCE_DIR}/src/nvenc/nvenc_sdk_versions.def")
+file(STRINGS "${NVENC_SDK_MANIFEST}" nvenc_sdk_entries
+        REGEX "^SUNSHINE_NVENC_SDK\\([0-9]+,[ \t]*[0-9_]+\\)$")
+
+if(NOT nvenc_sdk_entries)
+    message(FATAL_ERROR "No NVENC SDK compatibility tiers found in ${NVENC_SDK_MANIFEST}")
+endif()
+
+function(validate_nvenc_sdk_headers sdk_version)
+    set(header "${CMAKE_SOURCE_DIR}/third-party/nvenc-headers/${sdk_version}/include/ffnvcodec/nvEncodeAPI.h")
+    if(NOT EXISTS "${header}")
+        message(FATAL_ERROR
+                "NVENC SDK ${sdk_version} headers are missing. "
+                "Run: git submodule update --init third-party/nvenc-headers/${sdk_version}")
+    endif()
+
+    file(STRINGS "${header}" major_line
+            REGEX "^#define[ \t]+NVENCAPI_MAJOR_VERSION[ \t]+[0-9]+")
+    file(STRINGS "${header}" minor_line
+            REGEX "^#define[ \t]+NVENCAPI_MINOR_VERSION[ \t]+[0-9]+")
+    string(REGEX MATCH "[0-9]+$" major_version "${major_line}")
+    string(REGEX MATCH "[0-9]+$" minor_version "${minor_line}")
+    math(EXPR actual_version "${major_version} * 100 + ${minor_version}")
+
+    if(NOT actual_version EQUAL sdk_version)
+        message(FATAL_ERROR
+                "NVENC headers in ${sdk_version}/ expose API ${actual_version}. "
+                "Add a separate compatibility tier instead of replacing an existing one.")
+    endif()
+
+    foreach(factory_extension IN ITEMS h cpp)
+        set(factory
+                "${CMAKE_SOURCE_DIR}/src/nvenc/win/impl/nvenc_dynamic_factory_${sdk_version}.${factory_extension}")
+        if(NOT EXISTS "${factory}")
+            message(FATAL_ERROR
+                    "NVENC SDK ${sdk_version} factory is missing: ${factory}")
+        endif()
+    endforeach()
+endfunction()
+
+foreach(nvenc_sdk_entry IN LISTS nvenc_sdk_entries)
+    string(REGEX REPLACE
+            "^SUNSHINE_NVENC_SDK\\(([0-9]+),.*$" "\\1"
+            sdk_version "${nvenc_sdk_entry}")
+    validate_nvenc_sdk_headers(${sdk_version})
+endforeach()
+
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nvenc-headers")
+file(GLOB_RECURSE NVENC_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/src/nvenc/*.h"
+        "${CMAKE_SOURCE_DIR}/src/nvenc/*.cpp")
+
+# amf
+# Use the dedicated AMF SDK submodule (third-party/AMF) for the native AMF encoder
+# path under src/amf/. Source code includes via `#include <AMF/core/...>` and
+# `#include <AMF/components/...>`, so we stage the upstream headers (which live
+# under amf/public/include/{core,components}/) into a build-tree directory that
+# carries the required `AMF/` prefix. Listed BEFORE build-deps include dirs so
+# newer headers (e.g. v1.5.2 AudioBuffer.h `static inline` fix, new SetProperty
+# names) take precedence over older AMF headers shipped inside build-deps.
+set(AMF_SDK_SRC "${CMAKE_SOURCE_DIR}/third-party/AMF/amf/public/include")
+set(AMF_SDK_STAGE "${CMAKE_BINARY_DIR}/amf_include")
+if(NOT EXISTS "${AMF_SDK_SRC}/core/Version.h")
+    message(FATAL_ERROR "AMF submodule not initialized. Run: git submodule update --init third-party/AMF")
+endif()
+file(MAKE_DIRECTORY "${AMF_SDK_STAGE}/AMF")
+file(COPY "${AMF_SDK_SRC}/core" "${AMF_SDK_SRC}/components"
+        DESTINATION "${AMF_SDK_STAGE}/AMF")
+include_directories(SYSTEM BEFORE "${AMF_SDK_STAGE}")
+file(GLOB_RECURSE AMF_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/src/amf/*.h"
+        "${CMAKE_SOURCE_DIR}/src/amf/*.cpp")
+
+# vigem
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include")
+
+# sunshine icon
+if(NOT DEFINED SUNSHINE_ICON_PATH)
+    set(SUNSHINE_ICON_PATH "${CMAKE_SOURCE_DIR}/assets/brand/sunshine.ico")
+endif()
+
+configure_file("${CMAKE_SOURCE_DIR}/src/platform/windows/windows.rc.in" windows.rc @ONLY)
+
+if(SUNSHINE_ENABLE_TRAY AND SUNSHINE_ENABLE_LEGACY_TRAY)
+    set(SUNSHINE_TRAY 1)
+    set(SUNSHINE_GUI_TRAY 0)
+elseif(SUNSHINE_ENABLE_TRAY)
+    set(SUNSHINE_TRAY 0)
+    set(SUNSHINE_GUI_TRAY 1)
+else()
+    set(SUNSHINE_TRAY 0)
+    set(SUNSHINE_GUI_TRAY 0)
+endif()
+
+set(PLATFORM_TARGET_FILES
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ftime_compat.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/win_dark_mode.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/win_dark_mode.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ds5/ds5_sidecar_client.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/ds5/ds5_sidecar_client.cpp"
+        "${CMAKE_SOURCE_DIR}/src/touch_keyboard_session.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/touch_keyboard_session.cpp"
+
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_device_host/microphone_client.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_mouse.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_mouse.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dsu_server.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dsu_server.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_contract.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_contract.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pre_encode_filter.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pre_encode_filter.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pre_encode_filter_helpers.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/backend_factory.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/backend_factory.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/truehdr_filter.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/truehdr_filter.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/adapter_abi.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/adapter_loader.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/rtx_hdr/adapter_loader.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/dlssnr_filter.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/dlssnr_filter.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/hdr_filter.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/adapter_abi.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/adapter_loader.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/image_enhancement/dlss_nr/adapter_loader.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_cursor.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_cursor.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram_internal.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram_internal.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/cpu_encoder.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/cpu_encoder.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/gpu_encoder.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/gpu_encoder.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_ram.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_wgc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_amd.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vdd.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vdd_vram.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vulkan_hdr_bridge_session.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/vulkan_hdr_bridge_session.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/audio.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/mic_write.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/color_profile.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/color_profile.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/device_hdr_states.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/device_modes.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/device_topology.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/general_functions.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/settings_topology.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/settings_topology.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/settings.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/windows_utils.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/windows_utils.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/session_listener.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_device/session_listener.cpp"
+        "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
+        "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
+        "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
+        "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Util.h"
+        "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/km/BusShared.h"
+        ${NVPREFS_FILES}
+        ${NVENC_SOURCES}
+        ${AMF_SOURCES})
+
+list(PREPEND PLATFORM_LIBRARIES
+        advapi32
+        avrt
+        crypt32
+        d3d11
+        D3DCompiler
+        dwmapi
+        dxgi
+        hid
+        iphlpapi
+        ksuser
+        libssp.a
+        libstdc++.a
+        libwinpthread.a
+        minhook::minhook
+        nlohmann_json::nlohmann_json
+        ntdll
+        ole32
+        PowrProf
+        setupapi
+        shlwapi
+        synchronization.lib
+        userenv
+        ws2_32
+        wsock32
+        wtsapi32
+)
+
+if(SUNSHINE_ENABLE_TRAY AND SUNSHINE_ENABLE_LEGACY_TRAY)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/third-party/tray/src/tray_windows.c")
+endif()

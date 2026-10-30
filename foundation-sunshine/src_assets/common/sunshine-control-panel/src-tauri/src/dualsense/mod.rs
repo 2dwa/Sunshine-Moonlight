@@ -1,0 +1,170 @@
+//! Optional DualSense component lifecycle.
+//!
+//! The complete sidecar, including patched HIDMaestro Core, is acquired from a release asset
+//! pinned by the installed Sunshine manifest, from a matching user-selected
+//! package, or from an explicit development override. This keeps the optional
+//! self-contained .NET runtime out of the main Sunshine package.
+//!
+//! Sunshine installs `tools/ds5-sidecar-package.json` with its main package.
+//! It is separate from the active component's `component.json`: a host update
+//! supplies the new pinned download while the old component remains installed.
+//! A standalone newer GUI waits for a matching host manifest.
+
+#[cfg(any(target_os = "windows", test))]
+mod auto_update;
+mod commands;
+mod config;
+#[cfg(target_os = "windows")]
+mod elevated;
+mod install;
+mod packages;
+mod probe;
+#[cfg(test)]
+mod tests;
+
+pub use commands::*;
+#[cfg(target_os = "windows")]
+pub(crate) use elevated::try_handle_elevated_command;
+#[cfg(target_os = "windows")]
+pub(crate) use install::ensure_pinned_usbip;
+#[cfg(target_os = "windows")]
+pub(crate) use packages::{UsbipInstallResult, component_root};
+#[cfg(target_os = "windows")]
+pub(crate) use probe::ensure_no_active_session;
+
+#[cfg(test)]
+pub(crate) use {
+    config::{
+        CoreDualSenseResponse, CoreDualSenseSettings, clamp_tuning, core_ds5_http_error,
+        require_entity_tag, resolve_core_config, update_config_fields, update_tuning_fields,
+        validate_core_ds5_response, validate_strong_entity_tag,
+    },
+    install::{
+        classify_usbip_installer_exit_code, component_fs_error, copy_runtime_files,
+        extract_sidecar_package, recover_interrupted_activation, retry_component_fs_operation,
+        rollback_activated_component,
+    },
+    packages::{
+        InstalledComponentManifest, LocalComponentKind, SidecarPackageManifest,
+        classify_local_component_packages, component_matches_current_runtime,
+        component_update_available, local_component_kind, purge_stale_handoff_packages,
+        read_sidecar_package_manifest, sha256_file, validate_sidecar_integrity,
+        validate_sidecar_package_manifest,
+    },
+    probe::{
+        component_is_verified, component_state, component_test_failure, local_uninstalled_status,
+        run_with_timeout, usbip_discovery_status, usbip_transport_status,
+        validate_requested_profile,
+    },
+};
+
+#[cfg(test)]
+#[cfg(target_os = "windows")]
+pub(crate) use elevated::{
+    ElevatedMessage, ElevatedOperation, MAX_ELEVATED_MESSAGE_BYTES, read_limited_elevated_line,
+    receive_local_component_packages_into,
+};
+
+use log::info;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tauri::Emitter;
+
+pub(crate) const COMPONENT_VERSION: &str = env!("SUNSHINE_COMPONENT_VERSION");
+pub(crate) const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const HIDMAESTRO_VERSION: &str = env!("SUNSHINE_HIDMAESTRO_VERSION");
+// Legacy archive digest, used only to identify existing backups.
+pub(crate) const LEGACY_HIDMAESTRO_1_7_3_SHA256: &str =
+    "a337ddc70e90ff969deaaaad8c3f3f8b7a0ee5b61a6a9ff6183ca35950bd8503";
+pub(crate) const MAX_ARCHIVE_BYTES: u64 = 160 * 1024 * 1024;
+pub(crate) const MAX_USBIP_INSTALLER_BYTES: u64 = 48 * 1024 * 1024;
+pub(crate) const MAX_EXTRACTED_BYTES: u64 = 200 * 1024 * 1024;
+pub(crate) const MAX_ARCHIVE_FILES: usize = 256;
+pub(crate) const SIDECAR_EXE: &str = "Sunshine.Ds5Sidecar.exe";
+pub(crate) const SIDECAR_PACKAGE_MANIFEST: &str = "ds5-sidecar-package.json";
+pub(crate) const SIDECAR_PACKAGE_ASSET: &str = "Sunshine.Ds5Sidecar.x64.zip";
+pub(crate) const SIDECAR_PACKAGE_TARGET: &str = "win-x64-self-contained";
+pub(crate) const SIDECAR_PACKAGE_LICENSE: &str = "GPL-3.0-only";
+pub(crate) const MAX_SIDECAR_PACKAGE_MANIFEST_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_SIDECAR_PACKAGE_BYTES: u64 = 160 * 1024 * 1024;
+pub(crate) const MAX_LOCAL_COMPONENT_PACKAGES: usize = 2;
+pub(crate) const MAX_LOCAL_COMPONENT_PACKAGE_BYTES: u64 = MAX_ARCHIVE_BYTES;
+pub(crate) const MAX_LOCAL_COMPONENT_TOTAL_BYTES: u64 =
+    MAX_SIDECAR_PACKAGE_BYTES + MAX_USBIP_INSTALLER_BYTES;
+pub(crate) const COMPONENT_DOWNLOAD_OVERALL_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30 * 60);
+pub(crate) const COMPONENT_FS_RETRY_ATTEMPTS: usize = 20;
+pub(crate) const COMPONENT_FS_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(200);
+
+pub(crate) static COMPONENT_OPERATION: Lazy<tokio::sync::Mutex<()>> =
+    Lazy::new(|| tokio::sync::Mutex::new(()));
+pub(crate) static LAST_OBSERVED_CONFIG_REVISION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn observe_config_revision(revision: u64) {
+    if revision == 0 {
+        return;
+    }
+
+    let previous = LAST_OBSERVED_CONFIG_REVISION.swap(revision, Ordering::Relaxed);
+    if previous != 0 && previous != revision {
+        info!("DualSense configuration revision changed: {previous} -> {revision}");
+    }
+}
+
+pub(crate) type ProgressReporter<'a> = dyn Fn(&str, u32) + Send + Sync + 'a;
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DualSenseStatus {
+    pub state: String,
+    pub installed: bool,
+    pub verified: bool,
+    pub audio_haptics: bool,
+    pub genshin_compatibility: bool,
+    pub genshin_compatibility_available: bool,
+    pub legacy_strength: f64,
+    pub legacy_curve: f64,
+    pub legacy_noise_gate: f64,
+    pub config_revision: u64,
+    pub config_readable: bool,
+    pub component_version: String,
+    pub available_component_version: String,
+    pub update_available: bool,
+    pub runtime_version: String,
+    pub install_path: String,
+    pub sidecar_path: String,
+    pub driver_installed: bool,
+    pub usbip_available: bool,
+    pub usbip_version: String,
+    pub usbip_version_valid: bool,
+    pub reboot_recommended: bool,
+    pub standard_profile: bool,
+    pub composite_profile: bool,
+    pub in_use: bool,
+    pub error_code: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DualSenseTuningResult {
+    legacy_strength: f64,
+    legacy_curve: f64,
+    legacy_noise_gate: f64,
+    revision: u64,
+    changed: bool,
+}
+
+pub(crate) fn emit_progress(app: &tauri::AppHandle, stage: &str, progress: u32) {
+    let _ = app.emit(
+        "dualsense-operation-progress",
+        serde_json::json!({ "stage": stage, "progress": progress.min(100) }),
+    );
+}
+
+pub(crate) fn report_progress(progress: &ProgressReporter<'_>, stage: &str, value: u32) {
+    progress(stage, value.min(100));
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) use auto_update::start_installed_component_update;

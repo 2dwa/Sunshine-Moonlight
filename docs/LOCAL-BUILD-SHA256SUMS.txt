@@ -1,0 +1,4 @@
+0a4e503e500220a37ba96b7659c1276f22af492ca1ad67b25980f1d5276f8f07  Moonlight-Focus-Setup-x64.exe
+6ee32049996b5d722b83bb0e2fef1a7e8defda993296870b94f3827ec807c7d0  Moonlight-Focus-x64.zip
+8b24c5ddb77dd8ad08150df3e8c23fde3445a5922aeec8136398646f53d59c25  Sunshine-Focus-Sync-Setup-x64.exe
+56bf6a779df0528959e954daf8d46100b76c5005156bbf5acea41efe79ced402  Sunshine-Focus-Sync-x64.zip

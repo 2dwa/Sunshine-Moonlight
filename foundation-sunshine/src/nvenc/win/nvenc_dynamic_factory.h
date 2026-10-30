@@ -1,0 +1,78 @@
+/**
+ * @file src/nvenc/win/nvenc_dynamic_factory.h
+ * @brief Declarations for Windows NVENC encoder factory.
+ */
+#pragma once
+
+#include "../nvenc_version.h"
+#include "impl/nvenc_shared_dll.h"
+#include "nvenc_d3d11.h"
+
+#include <functional>
+#include <memory>
+
+namespace nvenc {
+
+  /**
+   * @brief Runtime operations used to discover the installed NVENC API.
+   */
+  struct nvenc_runtime_api {
+    using load_driver_fn = std::function<shared_dll()>;
+    using get_symbol_fn = std::function<FARPROC(HMODULE, const char *)>;
+
+    load_driver_fn load_driver;
+    get_symbol_fn get_symbol;
+  };
+
+  /**
+   * @brief Windows NVENC encoder factory.
+   */
+  class nvenc_dynamic_factory {
+  public:
+    virtual ~nvenc_dynamic_factory() = default;
+
+    /**
+     * @brief Initialize NVENC factory, depends on NVIDIA drivers present in the system.
+     * @return `shared_ptr` containing factory on success, empty `shared_ptr` on error.
+     */
+    static std::shared_ptr<nvenc_dynamic_factory>
+    get();
+
+    /**
+     * @brief Initialize an NVENC factory using injectable runtime operations.
+     * @return `shared_ptr` containing factory on success, empty `shared_ptr` on error.
+     */
+    static std::shared_ptr<nvenc_dynamic_factory>
+    get(const nvenc_runtime_api &runtime_api);
+
+    /**
+     * @brief Get the SDK implementation selected for this factory.
+     */
+    virtual nvenc_sdk_version
+    sdk_version() const = 0;
+
+    /**
+     * @brief Keep CUDA contexts acquired during one encoder probe alive until
+     *        the returned token is released. Does not create a CUDA context.
+     */
+    virtual std::shared_ptr<void>
+    retain_cuda_interop_contexts() = 0;
+
+    /**
+     * @brief Create native Direct3D11 NVENC encoder.
+     * @param d3d_device Direct3D11 device.
+     * @return `unique_ptr` containing encoder on success, empty `unique_ptr` on error.
+     */
+    virtual std::unique_ptr<nvenc_d3d11>
+    create_nvenc_d3d11_native(ID3D11Device *d3d_device) = 0;
+
+    /**
+     * @brief Create CUDA NVENC encoder with Direct3D11 input surfaces.
+     * @param d3d_device Direct3D11 device.
+     * @return `unique_ptr` containing encoder on success, empty `unique_ptr` on error.
+     */
+    virtual std::unique_ptr<nvenc_d3d11>
+    create_nvenc_d3d11_on_cuda(ID3D11Device *d3d_device) = 0;
+  };
+
+}  // namespace nvenc

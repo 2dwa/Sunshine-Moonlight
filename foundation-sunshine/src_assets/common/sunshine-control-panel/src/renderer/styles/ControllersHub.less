@@ -1,0 +1,769 @@
+// ========================================
+// 控制器中心（Controllers Hub）— 像素风样式
+// 视觉语言与 DualSenseSettings.less 保持一致：
+// 像素窗锚点 + ◈ 分区标题 + 投影大按钮 / [ 方括号 ] 小按钮 + 方角控件。
+// 本文件经非 scoped <style> 引入，前缀 chub- 全局唯一。
+// ========================================
+
+@import './pixel-language.less';
+
+@font-face {
+  // Fusion Pixel 12px proportional（OFL）补齐 PixelMplus12 缺失的简中字库
+  font-family: FusionPixel;
+  src: url('/fonts/fusion-pixel-12px-proportional-zh_hans.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+
+.chub-page {
+  --pix-font: fusionpixel, pixelmplus12, youyuan, 'Courier New', monospace;
+  --chub-primary: @pixel-primary-light;
+  --chub-primary-deep: @pixel-primary-deep-light;
+  --chub-window-line: @pixel-primary-light;
+  --chub-window-fill: @pixel-window-fill-light;
+  --chub-window-shadow: @pixel-window-shadow-light;
+
+  max-width: 960px;
+  .pixel-page-base();
+  .pixel-divider-color(var(--chub-window-line));
+}
+
+[data-bs-theme='dark'] .chub-page {
+  --chub-primary: @pixel-primary-dark;
+  --chub-primary-deep: @pixel-primary-deep-dark;
+  --chub-window-line: @pixel-window-line-dark;
+  --chub-window-fill: @pixel-window-fill-dark;
+  --chub-window-shadow: @pixel-window-shadow-dark;
+}
+
+// 大屏放开页面上限，卡片网格随可用宽度增列。
+@media (min-width: 1600px) {
+  .chub-page,
+  .chub-page .ds5-page {
+    max-width: 1400px;
+  }
+}
+
+// ============================================
+// 设计语言（与 DualSenseSettings.less 共享 pixel-language.less 中的定义）
+// 词汇表：
+//   大按钮   = 方角 + 2px 边 + 硬投影按压手感（主操作）
+//   小按钮   = [ 方括号 ] 文本操作（块内低权重动作）
+//   方角控件 = 标签 / 输入 / 步进器 / 复选框 / 开关 / 进度条 一律直角
+// 本层同时覆盖内嵌 ds5-page：ds5 仅在 .chub-page 内渲染，
+// 自身不再重复按钮与方角规则（text 模式的 .ds5-action 除外）。
+// ============================================
+
+.chub-page .el-button:not(.el-button--small):not(.is-text):not(.is-link) {
+  .pixel-block-button(var(--chub-primary-deep));
+}
+.chub-page .el-button--small:not(.is-text):not(.is-link) {
+  .pixel-bracket-button(var(--chub-primary));
+}
+@media (prefers-reduced-motion: reduce) {
+  .chub-page .el-button:not(.el-button--small):not(.is-text):not(.is-link),
+  .chub-page .el-button--small:not(.is-text):not(.is-link) {
+    transition: none;
+  }
+}
+
+// —— 方角控件 ——
+.chub-page .el-tag {
+  border-radius: 0;
+  border-width: 2px;
+}
+.chub-page .el-input__wrapper {
+  border-radius: 0;
+  box-shadow: 0 0 0 2px var(--el-border-color) inset;
+}
+.chub-page .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 2px var(--chub-primary) inset;
+}
+.chub-page .el-input-number__decrease,
+.chub-page .el-input-number__increase {
+  border-radius: 0;
+  background: var(--el-fill-color-light);
+}
+.chub-page .el-input__inner {
+  font-family: var(--pix-font);
+  font-weight: 400;
+}
+.chub-page .el-checkbox__inner {
+  border-radius: 0;
+}
+.chub-page .el-switch__core {
+  border-radius: 0;
+
+  .el-switch__action {
+    border-radius: 0;
+  }
+}
+.chub-page .el-switch.is-checked .el-switch__core {
+  border-color: var(--chub-primary);
+  background-color: var(--chub-primary);
+}
+.chub-page .el-progress-bar__outer,
+.chub-page .el-progress-bar__inner {
+  border-radius: 0;
+}
+
+// ============ 主区：手柄类型选择 ============
+.chub-question {
+  margin: 0 0 14px;
+  color: var(--el-text-color-primary);
+  font-size: 15px;
+  font-weight: 500;
+}
+.chub-type-picker {
+  margin-top: 28px;
+}
+.chub-picker-row {
+  min-height: 88px;
+}
+
+// ============ 高级折叠区 ============
+.chub-advanced-block {
+  margin-top: 30px;
+}
+// ============ 页头横幅 ============
+.chub-header {
+  position: relative;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  overflow: hidden;
+  padding: 20px 22px;
+  border: 2px solid var(--chub-window-line);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--chub-primary) 12%, transparent), transparent 68%),
+    var(--chub-window-fill);
+  box-shadow: 0 5px 0 var(--chub-window-shadow);
+
+  &::after {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 88px;
+    height: 4px;
+    content: '';
+    background: var(--chub-primary);
+  }
+}
+.chub-header-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 2px solid var(--chub-window-line);
+  color: var(--chub-primary);
+  background: color-mix(in srgb, var(--chub-primary) 9%, transparent);
+  box-shadow: 3px 3px 0 var(--chub-window-shadow);
+
+  svg {
+    width: 28px;
+    height: 28px;
+  }
+}
+.chub-header-copy {
+  min-width: 0;
+}
+.chub-header-copy h1 {
+  margin: 0 0 4px;
+  color: var(--el-text-color-primary);
+  font-family: var(--pix-font);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+.chub-intro {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+// ============ Tab 栏（文件夹页签，复用 ds5-window-tab 语汇） ============
+// 搁板 = 容器自身 border-bottom，恒定 2px；页签用负 margin 岔进搁板，
+// 未选中页签底边与搁板同色融合，选中页签底边为窗底填充遮断搁板并向上投像素阴影。
+.chub-tabs {
+  margin-top: 26px;
+  min-width: 0;
+}
+.chub-tabbar {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  align-items: flex-end;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 2px solid var(--chub-window-line);
+}
+.chub-tab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  margin-bottom: -2px;
+  padding: 6px 12px;
+  border: 2px solid var(--el-border-color);
+  border-bottom-color: var(--chub-window-line);
+  background: transparent;
+  color: var(--el-text-color-secondary);
+  font-family: var(--pix-font);
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+
+  &:hover:not(.is-active) {
+    border-color: var(--chub-window-line);
+    color: var(--el-text-color-primary);
+  }
+  &.is-active {
+    position: relative;
+    z-index: 1;
+    border-color: var(--chub-window-line);
+    border-bottom-color: var(--chub-window-fill);
+    background: var(--chub-window-fill);
+    color: var(--chub-primary);
+    box-shadow: 0 -3px 0 var(--chub-window-shadow);
+
+    &::before {
+      content: '◈ ';
+    }
+  }
+  &:focus-visible {
+    outline: 2px solid var(--chub-primary);
+    outline-offset: -4px;
+  }
+}
+
+// ============ 面板容器 ============
+.chub-pane {
+  margin-top: 26px;
+}
+.chub-pane > .ds5-page {
+  margin-top: 28px;
+}
+
+// 内嵌 DualSense 页时由 .chub-page 统一控制列宽和留白。
+.chub-pane .ds5-page {
+  max-width: none;
+  margin-inline: 0;
+  padding: 0;
+}
+// 面板按根节点排版，包含 Vue 子组件的根节点。
+.chub-panel > :is(.chub-section, .chub-window, .chub-panel, .ds5-page) + :is(.chub-section, .chub-window, .chub-panel, .ds5-page) {
+  margin-top: @pixel-section-gap;
+}
+.chub-panel > :is(.chub-section, .ds5-page) + .chub-panel {
+  margin-top: @pixel-floating-window-gap;
+}
+.chub-panel > .chub-window + .chub-notice {
+  margin-top: @pixel-section-gap;
+}
+
+// ============ 像素窗（HUD） ============
+.chub-window {
+  .pixel-window(var(--chub-window-line), var(--chub-window-fill), var(--chub-window-shadow));
+}
+.chub-window-tab {
+  .pixel-window-tab(var(--chub-window-line), var(--chub-window-fill), var(--chub-primary), var(--chub-window-shadow));
+}
+.chub-hud-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.chub-hud-row--divided {
+  margin-bottom: @pixel-detail-gap;
+  padding-bottom: @pixel-detail-gap;
+  border-bottom: @pixel-detail-divider;
+}
+.chub-hud-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+}
+.chub-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--el-text-color-disabled);
+}
+.chub-window.state-ready .chub-status-dot { background: var(--el-color-success); }
+.chub-window.state-update_available .chub-status-dot { background: var(--el-color-warning); }
+.chub-window.state-in_use .chub-status-dot { background: var(--chub-primary); }
+.chub-window.state-error .chub-status-dot { background: var(--el-color-danger); }
+.chub-hud-version {
+  color: var(--el-text-color-secondary);
+  font-family: var(--pix-font);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+.chub-hud-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.chub-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-top: 18px;
+
+  > div {
+    min-width: 0;
+  }
+  span {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+  }
+  strong {
+    display: block;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+  }
+}
+.chub-status-error {
+  margin: 14px 0 0;
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
+.chub-notice {
+  margin-top: 14px;
+}
+.chub-context-note {
+  display: grid;
+  gap: 3px;
+  margin-top: 18px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--chub-primary);
+  background: color-mix(in srgb, var(--chub-primary) 7%, transparent);
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.55;
+
+  strong {
+    color: var(--el-text-color-primary);
+    font-size: 13px;
+  }
+}
+// ============ USB/IP 设备管理 ============
+.chub-usb-setup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--pixel-divider-color);
+
+  p {
+    margin: 0;
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
+  }
+}
+.chub-usb-discovery {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 118px auto;
+  gap: 10px;
+  align-items: center;
+
+  // Element Plus 默认给 .el-input-number 固定 150px，会溢出 118px 轨道压住按钮
+  .el-input-number {
+    width: 100%;
+  }
+}
+.chub-usb-discovery + .chub-hint,
+.chub-usb-list + .chub-hint {
+  margin-top: 14px;
+}
+.chub-usb-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+.chub-usb-device {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: color-mix(in srgb, var(--chub-window-fill) 88%, transparent);
+}
+.chub-usb-device-body {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+
+  strong,
+  span,
+  small {
+    overflow-wrap: anywhere;
+  }
+  strong { font-size: 13px; }
+  span,
+  small {
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+  }
+}
+.chub-usb-port {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  flex: 0 0 36px;
+  border: 2px solid var(--chub-window-line);
+  color: var(--chub-primary);
+  font-family: var(--pix-font);
+  font-size: 13px;
+}
+// ============ 分区 ============
+.chub-section-head {
+  .pixel-section-head(14px);
+}
+.chub-section-label {
+  .pixel-section-label(var(--chub-primary), 14px);
+}
+.chub-section-rule {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, var(--chub-window-line), transparent);
+  opacity: 0.45;
+}
+.chub-hint {
+  margin: 0 0 14px;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
+}
+
+// ============ 可折叠分区 ============
+// 统一 disclosure 词汇：替换浏览器默认展开三角，summary 承担分区头或轻量文本行。
+// 分区级（--section）：summary 即 ◈ 标签 + 渐隐线 + 指示符，折叠态也是完整分区头；
+// 区内子级（--inline）：轻量文本行，样式对齐 .chub-diagnostics-details 的 summary。
+.chub-disclosure > summary {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+
+  &::-webkit-details-marker {
+    display: none;
+  }
+
+  .chub-disclosure-mark {
+    color: var(--chub-primary);
+    font-size: 12px;
+    transition: transform 0.2s ease;
+  }
+}
+.chub-disclosure--section > summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 0;
+
+  &:hover .chub-section-label {
+    color: var(--chub-primary-deep);
+  }
+}
+.chub-disclosure--section[open] > summary {
+  margin-bottom: 14px;
+}
+.chub-disclosure--inline > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 10px 0;
+  color: var(--chub-primary-deep);
+  font-family: var(--pix-font);
+  font-size: 13px;
+  letter-spacing: 0.04em;
+
+  &:hover {
+    color: var(--chub-primary);
+  }
+}
+.chub-disclosure[open] > summary .chub-disclosure-mark {
+  transform: rotate(90deg);
+}
+
+// ============ 仿真模式选择 ============
+.chub-mode-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.chub-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 82px;
+  padding: 13px 14px;
+  border: 2px solid var(--el-border-color);
+  background: transparent;
+  color: var(--el-text-color-primary);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease;
+
+  .chub-mode-body {
+    flex: 1;
+    strong { font-size: 13px; display: block; }
+    small {
+      display: block;
+      color: var(--el-text-color-secondary);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+  }
+  .chub-mode-cursor {
+    color: transparent;
+    font-size: 12px;
+  }
+  &:hover:not(:disabled) {
+    border-color: var(--chub-primary);
+    background: rgba(74, 158, 255, 0.06);
+  }
+  &.is-selected {
+    border-color: var(--chub-primary);
+    background: color-mix(in srgb, var(--chub-primary) 7%, transparent);
+    box-shadow: 0 3px 0 var(--chub-window-shadow);
+    .chub-mode-cursor { color: var(--chub-primary); }
+  }
+  &.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+@media (max-width: 720px) {
+  .chub-mode-list {
+    grid-template-columns: 1fr;
+  }
+}
+.chub-advanced {
+  border-top: none;
+  border-bottom: none;
+
+  .el-collapse-item__header {
+    color: var(--chub-primary);
+    font-family: var(--pix-font);
+    font-size: 13px;
+    letter-spacing: 0.12em;
+    background: transparent;
+    border-bottom-color: transparent;
+  }
+  .el-collapse-item__wrap {
+    background: transparent;
+  }
+  .el-collapse-item__content {
+    padding-bottom: 6px;
+  }
+}
+.chub-subsection {
+  padding-top: 6px;
+}
+.chub-subsection + .chub-subsection {
+  margin-top: 20px;
+}
+
+// ============ 每应用覆盖 ============
+.chub-app-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chub-app-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+.chub-app-name {
+  font-size: 13px;
+}
+.chub-app-select {
+  width: 160px;
+}
+
+// ============ 勾选列表 / DSU ============
+.chub-check-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.chub-dsu-row {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  flex-wrap: wrap;
+}
+.chub-dsu-port {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.chub-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: @pixel-detail-gap;
+  padding-top: @pixel-detail-gap;
+  border-top: @pixel-detail-divider;
+}
+.chub-panel-footer .chub-hint {
+  flex: 1 1 320px;
+  margin: 0;
+}
+
+// ============ 周边工具卡片 ============
+.chub-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 14px;
+}
+.chub-overview-cards {
+  margin-top: 18px;
+}
+.chub-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 160px;
+  padding: 18px;
+  border: 2px solid var(--el-border-color);
+  background: var(--chub-window-fill);
+  box-shadow: 0 4px 0 var(--chub-window-shadow);
+}
+.chub-card-placeholder {
+  min-height: 130px;
+  justify-content: center;
+  pointer-events: none;
+}
+.chub-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  strong { min-width: 0; font-size: 15px; line-height: 1.4; }
+}
+.chub-card .chub-hint {
+  margin: 0;
+  flex: 1;
+}
+.chub-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.chub-mic-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.chub-diagnostics-details {
+  margin-top: 14px;
+  border-top: @pixel-detail-divider;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+
+  summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    padding: 10px 0;
+    color: var(--chub-primary-deep);
+    font-family: var(--pix-font);
+    font-size: 13px;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+
+    &::-webkit-details-marker { display: none; }
+    &::before {
+      content: '▸';
+      color: var(--chub-primary);
+      transition: transform 0.2s ease;
+    }
+  }
+  &[open] > summary::before { transform: rotate(90deg); }
+}
+.chub-value-danger {
+  color: var(--el-color-danger);
+}
+
+@media (max-width: 720px) {
+  .chub-page {
+    padding: 24px 18px 44px;
+  }
+  .chub-header {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 12px;
+    padding: 16px;
+  }
+  .chub-header-icon {
+    width: 40px;
+    height: 40px;
+
+    svg {
+      width: 24px;
+      height: 24px;
+    }
+  }
+  .chub-tabbar {
+    gap: 4px;
+  }
+  .chub-tab {
+    min-height: 40px;
+    padding: 7px 9px;
+    letter-spacing: 0.04em;
+  }
+  .chub-window {
+    padding: 24px 15px 18px;
+  }
+  .chub-runtime-grid,
+  .chub-cards {
+    grid-template-columns: 1fr;
+  }
+  .chub-mic-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .chub-usb-setup,
+  .chub-usb-device {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .chub-usb-discovery {
+    grid-template-columns: 1fr;
+  }
+  .chub-usb-port {
+    align-self: flex-start;
+  }
+}

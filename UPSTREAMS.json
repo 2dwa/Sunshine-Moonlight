@@ -1,0 +1,174 @@
+{
+  "components": [
+    {
+      "path": "moonlight-qt",
+      "repository": "https://github.com/moonlight-stream/moonlight-qt.git",
+      "revision": "f786e94c7b2f943e24e65d7d74deb539b827fc84",
+      "license": "GPL-3.0"
+    },
+    {
+      "path": "foundation-sunshine",
+      "repository": "https://github.com/AlkaidLab/foundation-sunshine.git",
+      "revision": "66d27405e43ba1cc5e8c88dda88ba44f06ac56b8",
+      "license": "GPL-3.0"
+    },
+    {
+      "path": "foundation-sunshine/src_assets/common/sunshine-control-panel",
+      "repository": "https://github.com/qiin2333/sunshine-control-panel.git",
+      "revision": "d5b22c2fecd2ea421ac80a633aa66875ee0a65cd",
+      "license": "MIT"
+    }
+  ],
+  "submodules": [
+    {
+      "path": "moonlight-qt/moonlight-common-c/moonlight-common-c",
+      "url": "https://github.com/moonlight-stream/moonlight-common-c.git",
+      "revision": "8599b6042a4ba27749b0f94134dd614b4328a9bc",
+      "shallow": "false"
+    },
+    {
+      "path": "moonlight-qt/qmdnsengine/qmdnsengine",
+      "url": "https://github.com/cgutman/qmdnsengine.git",
+      "revision": "b7a5a9f225d5e14b39f9fd1f905c4f505cf2ee99",
+      "shallow": "false"
+    },
+    {
+      "path": "moonlight-qt/app/SDL_GameControllerDB",
+      "url": "https://github.com/gabomdq/SDL_GameControllerDB.git",
+      "revision": "e5a5fa2ac6e645d72c619ea99520a3a4586ee005",
+      "shallow": "false"
+    },
+    {
+      "path": "moonlight-qt/soundio/libsoundio",
+      "url": "https://github.com/cgutman/libsoundio.git",
+      "revision": "34bbab80bd4034ba5080921b6ba6d61314126310",
+      "shallow": "false"
+    },
+    {
+      "path": "moonlight-qt/h264bitstream/h264bitstream",
+      "url": "https://github.com/aizvorski/h264bitstream.git",
+      "revision": "34f3c58afa3c47b6cf0a49308a68cbf89c5e0bff",
+      "shallow": "false"
+    },
+    {
+      "path": "moonlight-qt/libs",
+      "url": "https://github.com/cgutman/moonlight-qt-prebuilts.git",
+      "revision": "a27d6a7995ef504963fa9058c69e6ba1b449cc0f",
+      "shallow": "true"
+    },
+    {
+      "path": "foundation-sunshine/third-party/build-deps",
+      "url": "https://github.com/AlkaidLab/foundation-build-deps.git",
+      "revision": "8e569811b6c0d1e5273e441c9572a7d0ab079833",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/doxyconfig",
+      "url": "https://github.com/LizardByte/doxyconfig.git",
+      "revision": "7607aa992ca0770e06b735b8dfc15e36dc45649d",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/googletest",
+      "url": "https://github.com/google/googletest.git",
+      "revision": "d72f9c8aea6817cdf1ca0ac10887f328de7f3da2",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/inputtino",
+      "url": "https://github.com/games-on-whales/inputtino.git",
+      "revision": "d28ec79eb63324e68d73a7de22bcb5ff0a6f6bf8",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/moonlight-common-c",
+      "url": "https://github.com/qiin2333/moonlight-common-c.git",
+      "revision": "ddd52e20252ac2e27b4137b6db24530cf96fdfbb",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nanors",
+      "url": "https://github.com/sleepybishop/nanors.git",
+      "revision": "57ee5e921bd5047bca7ad377b181b7c28ea09731",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nvenc-headers/1100",
+      "url": "https://github.com/FFmpeg/nv-codec-headers.git",
+      "revision": "18024c477256555badd8d5f1c5dd45b1cbb31cf6",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nvenc-headers/1200",
+      "url": "https://github.com/FFmpeg/nv-codec-headers.git",
+      "revision": "fe32761e7a8bc79fcf560f356bf3898271bf4d56",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nvenc-headers/1300",
+      "url": "https://github.com/FFmpeg/nv-codec-headers.git",
+      "revision": "88fee5c37318c991a8762d423530f91681e32e3a",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nvenc-headers/1301",
+      "url": "https://github.com/FFmpeg/nv-codec-headers.git",
+      "revision": "0a6fba9a2820628b8103464f4c8753ee05838baa",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/AMF",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git",
+      "revision": "eadd00804d5f7e5cd8c85d540073198312870776",
+      "shallow": "true"
+    },
+    {
+      "path": "foundation-sunshine/third-party/nvapi",
+      "url": "https://github.com/NVIDIA/nvapi.git",
+      "revision": "9296d671e71608d6d6b7749ed93989af4ada8858",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/TPCircularBuffer",
+      "url": "https://github.com/michaeltyson/TPCircularBuffer.git",
+      "revision": "cc520397504bb72bc6df79ff03eb72988a6dc50d",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/tray",
+      "url": "https://github.com/LizardByte/tray.git",
+      "revision": "9a1c9540f10f3847c54af30d5060345e8e7634ed",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/ViGEmClient",
+      "url": "https://github.com/LizardByte/Virtual-Gamepad-Emulation-Client.git",
+      "revision": "8d71f6740ffff4671cdadbca255ce528e3cd3fef",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/wayland-protocols",
+      "url": "https://github.com/LizardByte-infrastructure/wayland-protocols.git",
+      "revision": "1f5f2b50ea2d88a9cc307902de2c8ed6b6d86f7d",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/wlr-protocols",
+      "url": "https://gitlab.freedesktop.org/wlroots/wlr-protocols.git",
+      "revision": "a741f0ac5d655338a5100fc34bc8cec87d237346",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/moonlight-audio-haptics",
+      "url": "https://github.com/AlkaidLab/moonlight-audio-haptics.git",
+      "revision": "21aae5018e36397d45b3dffff4005c952592ec0b",
+      "shallow": "false"
+    },
+    {
+      "path": "foundation-sunshine/third-party/pyrowave",
+      "url": "https://github.com/AlkaidLab/pyrowave.git",
+      "revision": "cc91cbf6363721d19d135d05ca8e3d8665ea6afd",
+      "shallow": "false"
+    }
+  ]
+}
