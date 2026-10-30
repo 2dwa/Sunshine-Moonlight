@@ -1,5 +1,14 @@
 # 变更记录
 
+## 2026-10-30 — LockFix2：修复 Windows 实际注入失败
+
+贡献者：**GPT-6 Astra（AI 辅助开发）**。
+
+- 实际前台窗口测试发现：旧同步线程以 `DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS` 打开桌面，虽能成功调用 `SetThreadDesktop`，但需要改变锁定状态时 `SendInput` 失败。上一次数据包修复未覆盖这一问题。
+- 改用 Sunshine 原有 `syncThreadDesktop()` 的 `DF_ALLOWOTHERACCOUNTHOOK` / `GENERIC_ALL` 权限组合；失败时在普通日志输出目标状态及 Win32 错误，每十秒限流一次。
+- 新增显式开启的 Win32 实测：验证三种锁定状态、重复同步不反转及实际大小写文字，26 项检查通过，结束恢复原状态。
+- 仅更新 Sunshine；保留 LockFix 的有符号数据包修复。安装包不自动启用服务，新增高权限开机自启说明。
+
 ## 2026-10-30 — 修复锁定键状态包被丢弃
 
 贡献者：**GPT-6 Astra（AI 辅助开发）**。

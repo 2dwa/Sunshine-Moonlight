@@ -6,6 +6,8 @@ Sunshine 能力位 `0x40000000` 表示支持此扩展。客户端用保留组合
 
 注意上游 `NV_KEYBOARD_PACKET::flags` 类型为 `char`，必须转换为无符号字节后比较 `0x80`；直接比较会在 Windows 默认 signed char 编译下丢弃所有状态包。`tests/test-lock-packet.cpp` 用真实数据包结构覆盖此回归。
 
+Windows 同步线程使用与原 `syncThreadDesktop()` 相同的输入桌面权限。仅能打开、切换到桌面并不代表能够注入输入；需要通过 `tests/test-lock-live.cpp` 验证真实前台窗口的锁定状态和字母大小写。失败日志为 `Keyboard lock sync failed`，包含目标状态和 Win32 错误；错误码为 0 也不能当成成功，SendInput 返回数量仍是判断依据。
+
 ## 文本和文件剪贴板
 
 能力位为 `0x20000000`，复用已配对证书验证的 GameStream HTTPS，无额外监听端口。所有请求使用 POST：

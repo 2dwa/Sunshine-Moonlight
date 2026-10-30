@@ -31,14 +31,22 @@ namespace platf::keyboard_locks {
     return count;
   }
 
-  inline bool synchronize(unsigned desired) {
-    if (desired & ~7u) return false;
+  inline bool synchronize(unsigned desired, DWORD *error_out = nullptr) {
+    if (error_out) *error_out = ERROR_SUCCESS;
+    if (desired & ~7u) {
+      if (error_out) *error_out = ERROR_INVALID_PARAMETER;
+      return false;
+    }
     bool success = false;
+    DWORD error = ERROR_SUCCESS;
     // A fresh input queue snapshots the current desktop key state. Reusing a
     // worker's GetKeyState snapshot would toggle keys again on periodic updates.
     std::thread worker([&] {
-      HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS);
-      if (!desktop) return;
+      // Match Sunshine's existing syncThreadDesktop() access rights. A handle
+      // opened with only READOBJECTS | WRITEOBJECTS can attach successfully but
+      // makes SendInput fail, so packet-only tests cannot validate this path.
+      HDESK desktop = OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, FALSE, GENERIC_ALL);
+      if (!desktop) { error = GetLastError(); return; }
       HDESK previous = GetThreadDesktop(GetCurrentThreadId());
       if (SetThreadDesktop(desktop)) {
         MSG message;
@@ -49,13 +57,20 @@ namespace platf::keyboard_locks {
             !(GetAsyncKeyState(VK_SCROLL) & 0x8000)) {
           INPUT events[6]{};
           unsigned count = make_inputs(read_state(), desired, events);
+          SetLastError(ERROR_SUCCESS);
           success = count == 0 || SendInput(count, events, sizeof(INPUT)) == count;
+          if (!success) error = GetLastError();
+        } else {
+          error = ERROR_BUSY;
         }
         SetThreadDesktop(previous);
+      } else {
+        error = GetLastError();
       }
       CloseDesktop(desktop);
     });
     worker.join();
+    if (error_out) *error_out = error;
     return success;
   }
 }

@@ -1,0 +1,16 @@
+Sunshine 高权限开机自启（Windows）
+
+原托盘菜单“开机运行”仍然保留。便携模式下注册普通用户的 Run 启动项，不等同于无人值守的高权限启动。要开机自动以高权限运行，应安装自带的 SunshineService；注册一次时需要 UAC 管理员授权，以后由 Windows 服务管理器启动。
+
+请在真正的串流主机上操作，先退出独立运行的 Sunshine，避免与服务实例争用端口。管理员身份打开“命令提示符”，执行下列命令（路径按实际安装位置修改）：
+
+cd /d "D:\APP\Sunshine-Focus-Sync"
+call scripts\install-service.bat --no-start
+call scripts\autostart-service.bat
+net start SunshineService
+
+每步应确认成功后再执行下一步。之后可在 services.msc 中查看 Sunshine Service，启动类型应为“自动”。托盘“开机运行”在服务模式下也会控制服务自动启动。
+
+说明：服务使用原版工具 tools\sunshinesvc.exe，保留原服务监督与用户会话逻辑；不要直接把 sunshine.exe 注册成服务。不要重复添加任务计划程序或另一份开机启动脚本。安装本次修复包本身不会启用服务；也未在你的机器上自动注册服务。服务启动不等于未登录时即可串流，具体受原版用户会话/显示设备初始化逻辑影响。
+
+停用开机启动：管理员命令提示符执行 sc.exe config SunshineService start= demand（只是改为手动，不删除配置）。

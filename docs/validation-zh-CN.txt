@@ -66,3 +66,9 @@
 - 64 种锁定键状态转换、快捷键、40 项剪贴板及无控制台启动检查通过。
 - D:\APP\Sunshine-Focus-Sync 已在无活动串流时部署；旧程序备份，原 sunshine.conf 摘要保持一致。
 - 未自动操作用户键盘或远端应用；双机实际输入效果需重连串流后确认。
+
+2026-10-30 LockFix2：输入桌面权限修复
+- 旧实现真实测试：状态不同时 synchronize=false，前台锁定状态未变；仅状态相同时返回成功。
+- 改用原 syncThreadDesktop 的 DF_ALLOWOTHERACCOUNTHOOK / GENERIC_ALL，三种锁定键实际切换成功。
+- test-lock-live.cpp 显式交互测试 26 项通过：前台状态、幂等、WM_CHAR 大小写；原状态恢复成功。
+- 原版服务自启流程保留，未自动注册/启用系统服务。

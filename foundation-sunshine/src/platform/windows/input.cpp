@@ -858,8 +858,17 @@ namespace platf {
 
   void
   sync_keyboard_locks(unsigned int state) {
-    if (!keyboard_locks::synchronize(state)) {
-      BOOST_LOG(debug) << "Keyboard lock state sync deferred (desktop unavailable or key held)";
+    DWORD error = ERROR_SUCCESS;
+    if (!keyboard_locks::synchronize(state, &error)) {
+      // Surface failures in normal logs, without flooding a one-second retry.
+      static std::atomic<ULONGLONG> last_warning {0};
+      auto previous = last_warning.load();
+      auto now = GetTickCount64();
+      if ((previous == 0 || now - previous >= 10000) && last_warning.compare_exchange_strong(previous, now)) {
+        BOOST_LOG(warning) << "Keyboard lock sync failed: target=" << state
+                           << " Win32 error=" << error
+                           << " (desktop access, held lock key or input privilege); will retry";
+      }
     }
   }
 

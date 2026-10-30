@@ -45,6 +45,8 @@ python tests/test-adapters.py
 
 `tests/test-sunshine-live-restart.py` 是**手动集成测试**：它连接本机 47990，确认没有活动串流后真的重启 Sunshine 两次。仅在要测试的实例已启动、允许重启时运行；它不是普通单元测试的一部分。
 
+`tests/test-lock-live.cpp` 是另一项**手动 Win32 集成测试**。用 UCRT64 g++ 编译（仓库根目录下 `g++ -std=c++17 -I. tests/test-lock-live.cpp -o out/tests/test-lock-live.exe -luser32 -limm32`），空闲桌面上运行 `out/tests/test-lock-live.exe --run-interactive`。它短暂显示专用测试窗口，验证真实 SendInput、三种锁定状态、重复同步及 WM_CHAR 大小写，最后恢复锁定状态与焦点；失去测试窗口焦点或检测到修饰键按住时停止。此项不在默认单元测试中运行。
+
 ## 打包
 
 四个目标构建成功后：

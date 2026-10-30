@@ -179,7 +179,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "923e0963f1a5c5998dff396f31c5603ae431764d6f255836ae9f09d6150fb657"
+    "sha256": "b560e12360764c1362aee6a83bb9d527002c2d0b1cc908a25327fd955eae878d"
   },
   {
     "path": "foundation-sunshine/src/platform/windows/misc.cpp",
@@ -221,7 +221,7 @@
     "date": "2026-10-30",
     "contributor": "GPT-6 Astra",
     "license": "GPL-3.0",
-    "sha256": "d5cfb5c91f1ba6cf43d8ebc5570d5958cc1c28562f16be72cf135142f73166ca"
+    "sha256": "8923d4d3194691a1e54708684c587a2b66eec323ca93ee22d56e84e97d2c34cd"
   },
   {
     "path": "foundation-sunshine/src/platform/windows/focusclipboard_win.h",
